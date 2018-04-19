@@ -597,35 +597,16 @@ if (-NOT (Get-AzureRmResourceGroup -Name $RG -EA SilentlyContinue)) {
   Write-Verbose -Message ("Creating RG '{0}'" -f $RG)
   $null = New-AzureRmResourceGroup -Name $RG -Location $Sydney
 }
-$UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+While (-NOT ($UNIXTHINGS) ) {
+ start-sleep -Seconds 1
+ $UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+}
 
 if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
   Write-Verbose -Message ("Creating RG '{0}'" -f $RGSF)
   $null = New-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
 }
 $ServiceFabricMel = Get-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
-#endregion
-#region SetPolicy
-Write-Verbose -Message 'Creating Regional Policy'
-$locationpolicy = New-AzureRmPolicyDefinition -Name 'regionPolicyDefinition' `
-                                              -Description 'Policy to allow resource creation only in certain regions' `
-                                              -Policy '{  
-  "if" : {
-    "not" : {
-      "field" : "location",
-      "in" : ["australiaeast" , "australiasoutheast"]
-    }
-  },
-  "then" : {
-    "effect" : "deny"
-  }
-}'          
-
-$SubscriptionCTX=Get-AzureRmContext
-$subid = $SubscriptionCTX.Subscription.SubscriptionId
-$PolicyScopedToRG = "/subscriptions/$subid/resourceGroups/$RG"
-$null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $locationpolicy `
-                            -Scope $PolicyScopedToRG 
 #endregion
 #region RBAC
 Write-Verbose -Message 'Creating RBAC role assignments'
@@ -1246,7 +1227,7 @@ $vstsBasicAuthHeader=$headers
     $Name=($blob.Name).ToLower()
     if ($name.LastIndexOf('.zip') -gt 0) {$name = $name.Substring(0,$name.LastIndexOf('.zip'))}
     $ContentLink=$blob.ICloudBlob.StorageUri.PrimaryUri.OriginalString
-    $upload=New-AzureRmAutomationModule -Name $Name -ContentLink $ContentLink -ResourceGroupName $RG -AutomationAccountName $MelAutomation
+    $upload=New-AzureRmAutomationModule -Name $Name -ContentLink $ContentLink -ResourceGroupName $RG -AutomationAccountName $MelAutomation 
     while ($Upload.ProvisioningState -ne 'Succeeded' -and $Upload.ProvisioningState -ne 'Failed') {
         $Upload = $Upload | Get-AzureRmAutomationModule
         $Upload.ProvisioningState
@@ -1286,7 +1267,9 @@ $vstsBasicAuthHeader=$headers
  Write-Verbose -Message 'Automation access RBAC'
   $SubscriptionID=(Get-AzureRmContext).Subscription.ID
   $RBACscope='/subscriptions/{0}/resourcegroups/{1}/Providers/Microsoft.Automation/automationAccounts/{2}' -f $SubscriptionID, $RG, $MelAutomation
-  New-AzureRmRoleAssignment -ObjectId $CBellee.Id -RoleDefinitionName 'Automation operator' -Scope $RBACscope
+  if (-NOT (Get-AzureRmRoleAssignment -ObjectId $CBellee.Id -Scope $RBACscope -RoleDefinitionName 'Automation operator')) {
+    New-AzureRmRoleAssignment -ObjectId $CBellee.Id -RoleDefinitionName 'Automation operator' -Scope $RBACscope
+  }
  #endregion
  #region RunAsAccount
   Add-Type -AssemblyName System.Security
@@ -2022,6 +2005,16 @@ else {
   }
 
 #endregion
+#region SetPolicy
+Write-Verbose -Message 'Creating Regional Policy'
+$UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $UNIXthings.ResourceId)) {
+ $Locations = Get-AzureRmLocation | where displayname -like "*australia*"
+ $AllowedLocations = @{"listOfAllowedLocations"=($Locations.location)}
+ $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
+ $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $UNIXthings.ResourceId -PolicyParameterObject $AllowedLocations
+}
+#endregion
 #region VPNgateways
     Write-Verbose -Message 'Creating VPN between Sydney and Melbourne Vnets.'
     $MelVnet = Get-AzureRmVirtualNetwork -Name $VnetMelbourne -ResourceGroupName $RG
@@ -2105,7 +2098,7 @@ Write-Verbose -Message 'generate Cert subject name'
 $certSubjectName="$ServiceFabricClustername.$Melbourne.cloudapp.azure.com"
 
 # Set the number of cluster nodes. Possible values: 1, 3-99
-$clustersize=3
+$clustersize=5
 
 # Create the Service Fabric cluster.
 # Also, drop the KeyVault-generated certificate into a folder
