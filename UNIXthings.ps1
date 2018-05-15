@@ -1,13 +1,9 @@
 ﻿#Requires -version 5
 #Requires -Module AzureRM, PKI, PowerShellGet, nx
-#Requires -RunAsAdministrator
-#          to create self-signed certs for automation RunAsAccount etc.
+#run as admin to create self-signed certs for automation RunAsAccount etc. (it needs admin for the local cert store, etc.)
 
 <# ToDo
   dev-test labs (or just use Visual Studio)
-  azure functions
-  https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
-  https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
   setup for ASR
   https://github.com/mariuszdotnet/azure-vmss-templates/blob/master/vm-lnx-lad/azuredeploy.ps1
 #>
@@ -21,6 +17,8 @@ if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
 }
 
 Set-AzureRmContext -SubscriptionName $Subscription
+$MyEmail=(Get-AzureRMContext).Account.ID
+$MyName =(Get-AzureRmContext).Account.ID.Split('@')[0]
 $VerbosePreference = 'Continue'
 #endregion
 #region TestAdminRights
@@ -41,7 +39,7 @@ function Test-AdminRights
 
     if ($isAdminProcess -eq $false)
     {
-      throw "Administrator rights are required."
+      throw 'Administrator rights are required.'
     }
   }
 #endregion
@@ -55,22 +53,29 @@ $AzureVMsize = 'Standard_D1_v2'
 $Sydney    = 'australiaeast'
 $Melbourne = 'australiasoutheast'
 
-$MelAutomation     = 'MelAutomation'
-$appDisplayName    = $MelAutomation + 'AutoAppDisplayName'
-$MelLogAnalyticsWS = 'Mel-log-analytics'
-$BackUpVaultSydney = 'SydBackupVault'
+$ApiMgtName = ('ApiMgt-' + $MyName).ToLower()
 
-$KeyVaultMelbourne = 'MelKeyVault'
-$KeyVaultMelSF     = 'MelSFKeyVault'
+$SQLdbName         = ('SQLdb01' + $MyName).ToLower()
+$SQLserverName     = ('sqlhostsvr' + $MyName).ToLower()   # globally unique name, must be lowercase
 
-$SydStorageAccount = 'sydunixstorage'
-$MelStorageAccount = 'melunixstorage'
+$MelAutomation     =  'MelAutomation'  
+$appDisplayName    = $MelAutomation + '-AutoAppDisplayName'
+$MelLogAnalyticsWS = ('Mel-log-analytics' + $MyName).ToLower()
+$BackUpVaultSydney = ('SydBackupVault' + $MyName).ToLower()
+
+$KeyVaultMelbourne = ('MelKeyVault'   + $MyName).ToLower()
+$KeyVaultMelSF     = ('MelSFKeyVault' + $MyName).ToLower()
+
+$SydStorageAccount = ('sydstorage'+ $MyName).ToLower()  # globally unique name!
+$MelStorageAccount = ('melstorage'+ $MyName).ToLower()  # globally unique name!
 
 $runBookContainer   = 'runbooks'
 $scriptContainer    = 'shellscripts'
 $DSCconfigContainer = 'dscconfigs'
 $DSCmoduleContainer = 'dscmodules'   # module.zip(s) have to be in a storage container
                                      # if they are to be uploaded into Automation.
+
+$functionAppName   = ('FunctionApp' + $MyName).ToLower()
 
 $VnetSydneySec     = 'Secure-vnet-Sydney'
 $VnetSydneySecAddr = '192.168.0.0/16'
@@ -497,7 +502,7 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
     LASTEDIT: 2017-11-22
   #>
 
-  [OutputType("PSAzureOperationResponse")]
+  [OutputType('PSAzureOperationResponse')]
 
   param
   (
@@ -505,7 +510,7 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
     [object] $WebhookData
   )
 
-  $ErrorActionPreference = "stop"
+  $ErrorActionPreference = 'stop'
 
   if ($WebhookData)
   {
@@ -514,17 +519,17 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
 
     # Get the info needed to identify the VM (depends on the payload schema).
     $schemaId = $WebhookBody.schemaId
-    Write-Verbose "schemaId: $schemaId" -Verbose
-    if ($schemaId -eq "AzureMonitorMetricAlert") {
+    Write-Verbose -Message "schemaId: $schemaId" -Verbose
+    if ($schemaId -eq 'AzureMonitorMetricAlert') {
         # This is the near-real-time Metric Alert schema
         $AlertContext = [object] ($WebhookBody.data).context
         $ResourceName = $AlertContext.resourceName
         $status = ($WebhookBody.data).status
     }
-    elseif ($schemaId -eq "Microsoft.Insights/activityLogs") {
+    elseif ($schemaId -eq 'Microsoft.Insights/activityLogs') {
         # This is the Activity Log Alert schema
         $AlertContext = [object] (($WebhookBody.data).context).activityLog
-        $ResourceName = (($AlertContext.resourceId).Split("/"))[-1]
+        $ResourceName = (($AlertContext.resourceId).Split('/'))[-1]
         $status = ($WebhookBody.data).status
     }
     elseif ($schemaId -eq $null) {
@@ -535,58 +540,58 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
     }
     else {
         # The schema isn't supported.
-        Write-Error "The alert data schema - $schemaId - is not supported."
+        Write-Error -Message "The alert data schema - $schemaId - is not supported."
     }
 
-    Write-Verbose "status: $status" -Verbose
-    if ($status -eq "Activated")
+    Write-Verbose -Message "status: $status" -Verbose
+    if ($status -eq 'Activated')
     {
         $ResourceType = $AlertContext.resourceType
         $ResourceGroupName = $AlertContext.resourceGroupName
         $SubId = $AlertContext.subscriptionId
-        Write-Verbose "resourceType: $ResourceType" -Verbose
-        Write-Verbose "resourceName: $ResourceName" -Verbose
-        Write-Verbose "resourceGroupName: $ResourceGroupName" -Verbose
-        Write-Verbose "subscriptionId: $SubId" -Verbose
+        Write-Verbose -Message "resourceType: $ResourceType" -Verbose
+        Write-Verbose -Message "resourceName: $ResourceName" -Verbose
+        Write-Verbose -Message "resourceGroupName: $ResourceGroupName" -Verbose
+        Write-Verbose -Message "subscriptionId: $SubId" -Verbose
 
         # Use this only if this is a resource management VM.
-        if ($ResourceType -eq "Microsoft.Compute/virtualMachines")
+        if ($ResourceType -eq 'Microsoft.Compute/virtualMachines')
         {
             # This is the VM.
-            Write-Verbose "This is a resource management VM." -Verbose
+            Write-Verbose -Message 'This is a resource management VM.' -Verbose
 
             # Authenticate to Azure by using the service principal and certificate. Then, set the subscription.
-            Write-Verbose "Authenticating to Azure with service principal and certificate" -Verbose
-            $ConnectionAssetName = "AzureRunAsConnection"
-            Write-Verbose "Get connection asset: $ConnectionAssetName" -Verbose
+            Write-Verbose -Message 'Authenticating to Azure with service principal and certificate' -Verbose
+            $ConnectionAssetName = 'AzureRunAsConnection'
+            Write-Verbose -Message "Get connection asset: $ConnectionAssetName" -Verbose
             $Conn = Get-AutomationConnection -Name $ConnectionAssetName
             if ($Conn -eq $null)
             {
                 throw "Could not retrieve connection asset: $ConnectionAssetName. Check that this asset exists in the Automation account."
             }
-            Write-Verbose "Authenticating to Azure with service principal." -Verbose
+            Write-Verbose -Message 'Authenticating to Azure with service principal.' -Verbose
             Add-AzureRMAccount -ServicePrincipal -Tenant $Conn.TenantID -ApplicationId $Conn.ApplicationID -CertificateThumbprint $Conn.CertificateThumbprint | Write-Verbose
-            Write-Verbose "Setting subscription to work against: $SubId" -Verbose
+            Write-Verbose -Message "Setting subscription to work against: $SubId" -Verbose
             Set-AzureRmContext -SubscriptionId $SubId -ErrorAction Stop | Write-Verbose
 
             # Stop the VM.
-            Write-Verbose "Stopping the VM - $ResourceName - in resource group - $ResourceGroupName -" -Verbose
+            Write-Verbose -Message "Stopping the VM - $ResourceName - in resource group - $ResourceGroupName -" -Verbose
             Stop-AzureRmVM -Name $ResourceName -ResourceGroupName $ResourceGroupName -Force
             # [OutputType(PSAzureOperationResponse")]
         }
         else {
             # ResourceType isn't supported.
-            Write-Error "$ResourceType is not a supported resource type for this runbook."
+            Write-Error -Message "$ResourceType is not a supported resource type for this runbook."
         }
     }
     else {
         # The alert status was not 'Activated', so no action taken.
-        Write-Verbose ("No action taken. Alert status: " + $status) -Verbose
+        Write-Verbose -Message ('No action taken. Alert status: ' + $status) -Verbose
     }
   }
   else {
     # Error
-    Write-Error "This runbook is meant to be started from an Azure alert webhook only."
+    Write-Error -Message 'This runbook is meant to be started from an Azure alert webhook only.'
   }
 }
 $RunBookScripts = 'StopAzureVMinResponseToVMalert'
@@ -598,8 +603,8 @@ if (-NOT (Get-AzureRmResourceGroup -Name $RG -EA SilentlyContinue)) {
   $null = New-AzureRmResourceGroup -Name $RG -Location $Sydney
 }
 While (-NOT ($UNIXTHINGS) ) {
- start-sleep -Seconds 1
- $UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+  $UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+  start-sleep -Seconds 2
 }
 
 if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
@@ -949,11 +954,11 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
 Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelbourne -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
 Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelSF     -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
 
-$secretvalue = ConvertTo-SecureString $user -AsPlainText -Force
-Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name "AdminUsername" -SecretValue $secretvalue
+$secretvalue = ConvertTo-SecureString -String $user -AsPlainText -Force
+Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name 'AdminUsername' -SecretValue $secretvalue
 
-$secretvalue = ConvertTo-SecureString $password -AsPlainText -Force
-Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name "Adminpassword" -SecretValue $secretvalue
+$secretvalue = ConvertTo-SecureString -String $password -AsPlainText -Force
+Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name 'Adminpassword' -SecretValue $secretvalue
 
 
 #region Create VSTS Auth header
@@ -1286,7 +1291,8 @@ $vstsBasicAuthHeader=$headers
         [Parameter(Mandatory = $false)] [int]     $SelfSignedCertNoOfMonthsUntilExpired = 12
        )
 
-    private:function Create-SelfSignedCertificate {
+    Add-Type -AssemblyName Microsoft.Azure.Commands.Common.Graph.RBAC
+private:function Create-SelfSignedCertificate {
  
       param([Parameter(Mandatory = $true)] [string] $certificateName, [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,[Parameter(Mandatory = $true)] [string] $certPath,[Parameter(Mandatory = $true)] [string] $certPathCer, [Parameter(Mandatory = $true)] [string] $selfSignedCertNoOfMonthsUntilExpired )
         Write-Verbose -Message 'Create Self-Signed Certificate'
@@ -1401,6 +1407,71 @@ $vstsBasicAuthHeader=$headers
     Write-Warning -Message 'Skipping New-RunAsAccount, as local Cert generation and store requires Administrator rights.'
     }
  #endregion
+#endregion
+#region Azure Functions
+
+  ## see https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
+  ## see https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
+
+ $functionAppResource = Get-AzureRmResource | Where-Object {$_.ResourceName -eq $functionAppName -And $_.ResourceType -eq 'Microsoft.Web/Sites'}
+ if ($null -eq $functionAppResource) {
+   $functionAppResource=New-AzureRmResource -ResourceType 'Microsoft.Web/Sites' -ResourceName $functionAppName -Kind 'functionapp' -Location $Sydney -ResourceGroupName $RG -Properties @{} -Force
+ } 
+
+ # OK now we have the underpinnings, go create an Azure function to call
+ # create an Azure function : CSharp JavaScript FSharp Java or for PowerShell, Python, and Batch, create your own custom function. 
+
+ # heck let's do a PowerShell function, of course! This will be stored in the site as 'run.ps1'.
+ $functionName = 'HttpTriggerPowerShell2'
+
+ $SB = {
+# POST method: $req
+$requestBody = Get-Content $req -Raw | ConvertFrom-Json
+$name = $requestBody.name
+
+# GET method: each querystring parameter is its own variable
+if ($req_query_name) 
+{
+    $name = $req_query_name 
+}
+
+Out-File -Encoding Ascii -FilePath $res -inputObject "Hello $name"
+}
+
+#now the definition of the function.json, which is stored alongside run.ps1
+
+$props = @{
+  config = @{
+   'bindings' = @(
+      @{
+         'name'      = 'req'
+         'type'      = 'httpTrigger'
+         'direction' = 'in'
+         'authlevel' = 'function'
+       },
+    @{
+         'name'      = 'res'
+         'type'      = 'http'
+         'direction' = 'out'
+     }
+   )
+   'disabled' = 'false'
+  }
+  files = @{ 'run.ps1' = $SB }
+}
+
+#new function goes into the correct location
+$newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
+
+# go deploy it.
+New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
+
+#endregion
+#region APImanagement
+Write-Verbose -Message 'creating API Management. (Sydney)'  # this takes 30 minutes..
+if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
+New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization "myOrganization" -AdminEmail $MyEmail -Sku "Developer"
+}
 #endregion
 #region RecoveryServicesVault
 Write-Verbose -Message 'creating Recovery Services Vault. (Sydney)'
@@ -2005,15 +2076,16 @@ else {
   }
 
 #endregion
-#region SetPolicy
-Write-Verbose -Message 'Creating Regional Policy'
-$UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
-if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $UNIXthings.ResourceId)) {
- $Locations = Get-AzureRmLocation | where displayname -like "*australia*"
- $AllowedLocations = @{"listOfAllowedLocations"=($Locations.location)}
- $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
- $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $UNIXthings.ResourceId -PolicyParameterObject $AllowedLocations
-}
+#region Databases
+    Write-Verbose -Message 'Creating SQL server'
+    if (-NOT (Get-AzureRmSqlServer -ResourceGroupName $RG -ServerName $SQLserverName -ErrorAction SilentlyContinue) ) {
+      New-AzureRmSqlServer -ResourceGroupName $RG -ServerName $SQLserverName -Location $Sydney -SqlAdministratorCredentials $AdminCredential
+    }
+    Write-Verbose -Message 'Creating SQL database'
+    if (-NOT (Get-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName -EA SilentlyContinue) ) {
+      $tags=@{key0="value0";key1="value1";key2="value2"}
+      New-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName  -Edition Standard -Tags $tags
+    }
 #endregion
 #region VPNgateways
     Write-Verbose -Message 'Creating VPN between Sydney and Melbourne Vnets.'
@@ -2123,4 +2195,15 @@ $certfile=Get-ChildItem -path "$certfolder\$RGSF*.pfx" |
 Write-Verbose -Message 'Importing into Cert: '
 Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
                       -CertStoreLocation 'Cert:\CurrentUser\My' -Exportable 
+#endregion
+#region SetPolicy
+Write-Verbose -Message 'Creating Regional Policy'
+$UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $UNIXthings.ResourceId)) {
+ $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
+ $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
+ $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
+ # this will probably wreck something, so I'll need to TEST this first!
+ # $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $UNIXthings.ResourceId -PolicyParameterObject $AllowedLocations
+}
 #endregion
