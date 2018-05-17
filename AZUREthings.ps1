@@ -6,11 +6,16 @@
   dev-test labs (or just use Visual Studio)
   setup for ASR
   https://github.com/mariuszdotnet/azure-vmss-templates/blob/master/vm-lnx-lad/azuredeploy.ps1
+  service fabric with containers
+  https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
+  Containers
+  https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
 #>
 
 #region LoginToAzure
 Import-Module -Name AzureRM 
 $Subscription='Microsoft Azure Internal Consumption'
+#$Subscription='Azure CXP'
 
 if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
   Connect-AzureRmAccount
@@ -19,6 +24,9 @@ if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
 Set-AzureRmContext -SubscriptionName $Subscription
 $MyEmail=(Get-AzureRMContext).Account.ID
 $MyName =(Get-AzureRmContext).Account.ID.Split('@')[0]
+if ($MyName.Length -gt 11) {
+  $MyName = $MyName.Substring(0,11)   # I use this to create unique names by prepending this to things.
+}
 $VerbosePreference = 'Continue'
 #endregion
 #region TestAdminRights
@@ -45,29 +53,30 @@ function Test-AdminRights
 #endregion
 #region Variables
 Write-Verbose -Message 'Set variables'
-$RG   = 'UNIXthings'
-$RGSF = 'ServiceFabricMel'
+$RG   = $MyName + '-AZUREthings'
+$RGSF = $MyName + '-ServiceFabricMel'
 
 $AzureVMsize = 'Standard_D1_v2'
 
 $Sydney    = 'australiaeast'
 $Melbourne = 'australiasoutheast'
 
-$ApiMgtName = ('ApiMgt-' + $MyName).ToLower()
+$ApiMgtName   = ($MyName + '-ApiMgt').ToLower()      # API management
+$RegistryName = ($MyName + '-Registry').ToLower()    # The registry name must be unique, 5-50 alphanumeric characters.
 
-$SQLdbName         = ('SQLdb01' + $MyName).ToLower()
-$SQLserverName     = ('sqlhostsvr' + $MyName).ToLower()   # globally unique name, must be lowercase
+$SQLdbName         = ($MyName + '-SQLdb01').ToLower()
+$SQLserverName     = ($MyName + '-sqlhostsvr').ToLower()   # globally unique name, must be lowercase
 
-$MelAutomation     =  'MelAutomation'  
+$MelAutomation     = $MyName + '-MelAutomation'  
 $appDisplayName    = $MelAutomation + '-AutoAppDisplayName'
-$MelLogAnalyticsWS = ('Mel-log-analytics' + $MyName).ToLower()
-$BackUpVaultSydney = ('SydBackupVault' + $MyName).ToLower()
+$MelLogAnalyticsWS = ($MyName + '-Mel-log-analytics').ToLower()
+$BackUpVaultSydney = ($MyName + '-SydBackupVault').ToLower()
 
-$KeyVaultMelbourne = ('MelKeyVault'   + $MyName).ToLower()
-$KeyVaultMelSF     = ('MelSFKeyVault' + $MyName).ToLower()
+$KeyVaultMelbourne =  $MyName + '-MelKeyVlt'      #'^[a-zA-Z0-9-]{3,24}$'.
+$KeyVaultMelSF     =  $MyName + '-MelSFKeyVlt'    #'^[a-zA-Z0-9-]{3,24}$'.
 
-$SydStorageAccount = ('sydstorage'+ $MyName).ToLower()  # globally unique name!
-$MelStorageAccount = ('melstorage'+ $MyName).ToLower()  # globally unique name!
+$SydStorageAccount = ($MyName + 'sydstorage').ToLower()  # globally unique name, 1-24 chars numbers and lowercase letters ONLY
+$MelStorageAccount = ($MyName + 'melstorage').ToLower()  # globally unique name, 1-24 chars numbers and lowercase letters ONLY
 
 $runBookContainer   = 'runbooks'
 $scriptContainer    = 'shellscripts'
@@ -75,7 +84,7 @@ $DSCconfigContainer = 'dscconfigs'
 $DSCmoduleContainer = 'dscmodules'   # module.zip(s) have to be in a storage container
                                      # if they are to be uploaded into Automation.
 
-$functionAppName   = ('FunctionApp' + $MyName).ToLower()
+$functionAppName   = $MyName + '-FunctionApp'
 
 $VnetSydneySec     = 'Secure-vnet-Sydney'
 $VnetSydneySecAddr = '192.168.0.0/16'
@@ -164,7 +173,7 @@ $MelbourneFreeBSD='MelFreeBSD'
 $MelbourneOpenBSD='MelOpenBSD'
 $MelbourneWinSvr ='MelWinSvr'
 
-$ServiceFabricClustername = 'winsfcluster'
+$ServiceFabricClustername =  'winsfcluster'
 
 $user     = 'localadmin'
 $password = 'M1cr0softAzure'
@@ -180,12 +189,14 @@ $SydWinLBname='sydwinlb'
 $features = @()
 #endregion
 #region DSCconfigs
+# define the DSC configuratiion scripts that we will use to configure our VMs
 Write-Verbose -Message 'Create DSCconfigs'
 $DSCMODULES=@('nx')
 
 if (-NOT (Test-Path -Path $LOCALTEMPMODULES)) {$null=New-Item -Path $LOCALTEMPMODULES -ItemType Directory -Force}
 $null=Get-ChildItem -Path $LOCALTEMPMODULES | Remove-Item -Force
 
+# ensure that any Modules required are also to be zipped, ready to be uploaded and then deployed into Automation.
 foreach ($DSCMODULE in $DSCMODULES) {
   if (-NOT (Get-Module -Name $DSCMODULE -ListAvailable)) {
     Find-Module -Name $DSCMODULE | Install-Module -Force -AllowClobber -Scope CurrentUser
@@ -248,7 +259,7 @@ foreach ($DSCMODULE in $DSCMODULES) {
 
         nxUser lukeb {
         Username = "lukeb"
-            Password = '517xgGp5foxbg'  # hash generated via mkpasswd
+        Password = '517xgGp5foxbg'  # hash generated via mkpasswd
         Ensure = "Present"
         FullName = "Luke Brennan"
         Description = "A user account for Luke"
@@ -421,6 +432,7 @@ $DSCconfigs = 'WinWebconfig','NxDSCconfig','NxApacheconfig'
 
 #endregion
 #region WindowsPSscripts
+# define some scripts that we will have executed upon boot using the scripting extension
 Write-Verbose -Message 'Create Windows PowerShell scripts'
 [scriptblock] $WinInstallIIS = {
   Add-WindowsFeature Web-Server
@@ -429,6 +441,7 @@ Write-Verbose -Message 'Create Windows PowerShell scripts'
 $WindowsScripts = 'WinInstallIIS'
 #endregion
 #region UNIXshellscripts
+# define some scripts that we will have executed upon boot using the scripting extension
 Write-Verbose -Message 'Create Linux bash scripts'
 $UbuntuInstallDocker = @'
   #!/bin/bash
@@ -477,6 +490,7 @@ $FreeBSDInstallDocker = @'
 $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker','FreeBSDInstallDocker'
 #endregion
 #region RunBookScripts
+# define a simple runbook that we will load into automation
 [scriptblock] $StopAzureVMinResponseToVMalert = {
   <#
     .SYNOPSIS
@@ -602,8 +616,8 @@ if (-NOT (Get-AzureRmResourceGroup -Name $RG -EA SilentlyContinue)) {
   Write-Verbose -Message ("Creating RG '{0}'" -f $RG)
   $null = New-AzureRmResourceGroup -Name $RG -Location $Sydney
 }
-While (-NOT ($UNIXTHINGS) ) {
-  $UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+While (-NOT ($AZURETHINGS) ) {
+  $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
   start-sleep -Seconds 2
 }
 
@@ -614,8 +628,9 @@ if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
 $ServiceFabricMel = Get-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
 #endregion
 #region RBAC
+# example of granting a user from another company (e.g. a consultant) access to our things as a Contributor
 Write-Verbose -Message 'Creating RBAC role assignments'
-$CBellee=Get-AzureRmADUser | Where-Object {$_.DisplayName -eq 'Chris Bellee'} # Chris is from another organisation
+$CBellee=Get-AzureRmADUser | Where-Object {$_.DisplayName -eq 'Chris Bellee'} # Chris is from another organisation,  but in my directory
 if ($CBellee) {
   if (-NOT (Get-AzureRmRoleAssignment -ObjectId $CBellee.Id -EA SilentlyContinue)) {
     $null=New-AzureRmRoleAssignment -ResourceGroupName $RG -RoleDefinitionName 'Contributor' -ObjectId $CBellee.Id
@@ -623,6 +638,7 @@ if ($CBellee) {
 }
 #endregion
 #region NSGs
+# the firewall rules we will apply to the sub-net configs
   Write-Verbose -Message "Create NSG's"
   #NSG for SydWINsubnet
   $rule1 = New-AzureRmNetworkSecurityRuleConfig -Name rdp-rule -Description 'Allow RDP' `
@@ -893,6 +909,7 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
 
 #endregion
 #region AVsets
+# define the availability sets our VMs will be leveraging
   Write-Verbose -Message 'Creating AV sets (Syd)'
   if (-NOT (Get-AzureRmAvailabilitySet -ResourceGroupName $RG -Name Syd-LX-AVset -EA SilentlyContinue)) {
      $null=New-AzureRmAvailabilitySet -Name Syd-LX-AVset  -ResourceGroupName $RG -Location $Sydney
@@ -1269,11 +1286,14 @@ $vstsBasicAuthHeader=$headers
 
  #endregion
  #region Automation RBAC
+ # example of granting a contractior rights to Automation
  Write-Verbose -Message 'Automation access RBAC'
   $SubscriptionID=(Get-AzureRmContext).Subscription.ID
   $RBACscope='/subscriptions/{0}/resourcegroups/{1}/Providers/Microsoft.Automation/automationAccounts/{2}' -f $SubscriptionID, $RG, $MelAutomation
-  if (-NOT (Get-AzureRmRoleAssignment -ObjectId $CBellee.Id -Scope $RBACscope -RoleDefinitionName 'Automation operator')) {
-    New-AzureRmRoleAssignment -ObjectId $CBellee.Id -RoleDefinitionName 'Automation operator' -Scope $RBACscope
+  if ($CBellee) {
+    if (-NOT (Get-AzureRmRoleAssignment -ObjectId $CBellee.Id -Scope $RBACscope -RoleDefinitionName 'Automation operator')) {
+      New-AzureRmRoleAssignment -ObjectId $CBellee.Id -RoleDefinitionName 'Automation operator' -Scope $RBACscope
+    }
   }
  #endregion
  #region RunAsAccount
@@ -1409,7 +1429,7 @@ private:function Create-SelfSignedCertificate {
  #endregion
 #endregion
 #region Azure Functions
-
+# create the azure function App engine, then upload a PS script as a function to be called.
   ## see https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
   ## see https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
 
@@ -1422,7 +1442,7 @@ private:function Create-SelfSignedCertificate {
  # create an Azure function : CSharp JavaScript FSharp Java or for PowerShell, Python, and Batch, create your own custom function. 
 
  # heck let's do a PowerShell function, of course! This will be stored in the site as 'run.ps1'.
- $functionName = 'HttpTriggerPowerShell2'
+ $functionName = 'HttpTriggeredPS'
 
  $SB = {
 # POST method: $req
@@ -1439,6 +1459,9 @@ Out-File -Encoding Ascii -FilePath $res -inputObject "Hello $name"
 }
 
 #now the definition of the function.json, which is stored alongside run.ps1
+#NOTE the $false will become False in the json, but it seems to expect false (lowercase) 
+#     if we put 'false' with quotes, again doesn't see it as false...
+#     It's a bug. But who is at fault?
 
 $props = @{
   config = @{
@@ -1455,22 +1478,17 @@ $props = @{
          'direction' = 'out'
      }
    )
-   'disabled' = 'false'
+   'disabled' = $false
   }
   files = @{ 'run.ps1' = $SB }
 }
 
-#new function goes into the correct location
+#this new function  will be placed into the correct location
 $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
 
-# go deploy it.
-New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
-
-#endregion
-#region APImanagement
-Write-Verbose -Message 'creating API Management. (Sydney)'  # this takes 30 minutes..
-if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
-New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization "myOrganization" -AdminEmail $MyEmail -Sku "Developer"
+if (-NOT (Get-AzureRmResource -ResourceID $newResourceId) ) {
+  # go deploy it.
+  New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
 }
 #endregion
 #region RecoveryServicesVault
@@ -1501,9 +1519,10 @@ $OIWSurl=$OIWS.PortalUrl
 
 #endregion
 #region VMconfigs
+# create the configs that we will use later to spin up actual VM instances.
 
-  if (-NOT ($SydLXavSet)) {Write-Error -Message 'Run the AVset region'}
-  if (-NOT ($SydStorage)) {Write-Error -Message 'Run the Storage region'}
+  if (-NOT ($SydLXavSet)) {Write-Error -Message 'Run the AVset region first'}
+  if (-NOT ($SydStorage)) {Write-Error -Message 'Run the Storage region first'}
 
   Write-Verbose -Message 'Creating VM configs (Sydney)'
 
@@ -1663,6 +1682,7 @@ $SydVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScale
 
 #endregion
 #region create VM's
+# now spin up the actual VMs
 #region   inSydney
 #region     Analytics
 if (Get-AzureRmOperationalInsightsWorkspace -ResourceGroupName $RG -Name $MelLogAnalyticsWS -EA SilentlyContinue){
@@ -2196,14 +2216,34 @@ Write-Verbose -Message 'Importing into Cert: '
 Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
                       -CertStoreLocation 'Cert:\CurrentUser\My' -Exportable 
 #endregion
-#region SetPolicy
-Write-Verbose -Message 'Creating Regional Policy'
-$UNIXthings = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
-if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $UNIXthings.ResourceId)) {
- $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
- $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
- $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
- # this will probably wreck something, so I'll need to TEST this first!
- # $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $UNIXthings.ResourceId -PolicyParameterObject $AllowedLocations
+#region APImanagement
+Write-Verbose -Message 'creating API Management. (Sydney)'  # WARNING: this takes 30 minutes..
+if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
+New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization "myOrganization" -AdminEmail $MyEmail -Sku "Developer"
 }
+#endregion
+#region SetPolicy
+if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so do NOT do policy!
+  Write-Verbose -Message 'Creating Regional Policy'
+  $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+  if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId)) {
+    $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
+    $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
+    $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
+    # this will probably wreck something, so I'll need to TEST this first!
+    # $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $AZURETHINGS.ResourceId -PolicyParameterObject $AllowedLocations
+  }
+}
+#endregion
+#region ContainerRegistry
+ if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName) ) {
+  if (Test-AzureRmContainerRegistryNameAvailability $RegistryName) {
+    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku "Basic" #-StorageAccountName $SydStorageAccount
+  }
+  else {
+    Write-Verbose  ( 'Registry name {0} is already in use.' -f $RegistryName )
+  }
+ }
+ # we will need creds when we use Docker to upload container images to our repo in this registry
+ $creds = Get-AzureRmContainerRegistryCredential -Registry $RegistryName
 #endregion
