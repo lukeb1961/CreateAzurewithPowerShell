@@ -12,11 +12,33 @@
   https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
 #>
 
+#region SelectSubscription
+function Get-UserPromptChoice 
+{
+    Param($options)
+
+    $arrOptions = @()
+    $i = 1
+
+    foreach ($option in $options)
+    {
+        $optionDesc = New-Object  -TypeName System.Management.Automation.Host.ChoiceDescription -ArgumentList ("&$i - $option")
+        $arrOptions += $optionDesc
+        $i++
+    }
+
+    return [System.Management.Automation.Host.ChoiceDescription[]]($arrOptions)
+}
+
+
+$Subscriptions='Microsoft Azure Internal Consumption','Azure CXP'
+
+$Prompt = Get-UserPromptChoice -options $Subscriptions
+$Choice = $Host.UI.PromptForChoice('Azure','Please choose a subscription',$Prompt,0) 
+$Subscription=$Subscriptions[$choice]
+#endregion
 #region LoginToAzure
 Import-Module -Name AzureRM 
-$Subscription='Microsoft Azure Internal Consumption'
-#$Subscription='Azure CXP'
-
 if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
   Connect-AzureRmAccount
 }
