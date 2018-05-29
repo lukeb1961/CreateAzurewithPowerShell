@@ -2338,6 +2338,8 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
                                -Name "mycontainer" -Image $image `
                                -RegistryCredential $pscred `
                                -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
+    #
+    Set-Location $CurrentLocation
    }
    else {
      Write-Verbose 'GIT and/or DOCKER not installed. Skipping...'
