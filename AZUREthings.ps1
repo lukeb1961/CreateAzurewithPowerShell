@@ -16,7 +16,7 @@
 #region SelectSubscription
 function Get-UserPromptChoice 
 {
-    Param($options)
+    Param([string[]]$options)
 
     $arrOptions = @()
     $i = 1
@@ -1353,7 +1353,12 @@ $vstsBasicAuthHeader=$headers
     Add-Type -AssemblyName Microsoft.Azure.Commands.Common.Graph.RBAC
     private:function Create-SelfSignedCertificate {
  
-      param([Parameter(Mandatory = $true)] [string] $certificateName, [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,[Parameter(Mandatory = $true)] [string] $certPath,[Parameter(Mandatory = $true)] [string] $certPathCer, [Parameter(Mandatory = $true)] [string] $selfSignedCertNoOfMonthsUntilExpired )
+      param([Parameter(Mandatory = $true)] [string] $certificateName, 
+            [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,
+            [Parameter(Mandatory = $true)] [string] $certPath,
+            [Parameter(Mandatory = $true)] [string] $certPathCer, 
+            [Parameter(Mandatory = $true)] [string] $selfSignedCertNoOfMonthsUntilExpired )
+
         Write-Verbose -Message 'Create Self-Signed Certificate'
         $CertStoreLocation='cert:\LocalMachine\My'
 
@@ -1368,9 +1373,11 @@ $vstsBasicAuthHeader=$headers
         Export-Certificate    -Cert ($CertStoreLocation + '\' + $Cert.Thumbprint) -FilePath $certPathCer -Type CERT | Write-Verbose
     }
 
-    function private:Create-ServicePrincipal {  
+    private:function Create-ServicePrincipal {  
 
-      param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
+      param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, 
+             [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
+
         Write-Verbose -Message 'Create Service Principal'
         $CurrentDate = Get-Date
         $keyValue = [System.Convert]::ToBase64String($PfxCert.GetRawCertData())
@@ -1402,16 +1409,17 @@ $vstsBasicAuthHeader=$headers
         return $Application.ApplicationId.ToString();
     }
 
-    function private:Create-AutomationCertificateAsset {
+    private:function Create-AutomationCertificateAsset {
         
       param ([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $certificateAssetName, [Parameter(Mandatory = $true)] [string] $certPath, [Parameter(Mandatory = $true)] [string] $certPlainPassword, [Parameter(Mandatory = $true)] [bool] $Exportable)
+
         Write-Verbose -Message 'Create Automation Certificate Asset'
         $CertPassword = ConvertTo-SecureString -String $certPlainPassword -AsPlainText -Force   
         Remove-AzureRmAutomationCertificate -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $certificateAssetName -ErrorAction SilentlyContinue
         New-AzureRmAutomationCertificate    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $certificateAssetName -Path $certPath -Password $CertPassword -Exportable:$Exportable  | write-verbose
     }
 
-    function private:Create-AutomationConnectionAsset {
+    private:function Create-AutomationConnectionAsset {
         
       param([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $connectionAssetName, [Parameter(Mandatory = $true)] [string] $connectionTypeName, [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
         Write-Verbose -Message 'Create Automation Connection Asset'
@@ -1451,12 +1459,7 @@ $vstsBasicAuthHeader=$headers
     Create-AutomationConnectionAsset -resourceGroup $ResourceGroup -automationAccountName $AutomationAccountName -connectionAssetName $ConnectionAssetName -connectionTypeName $ConnectionTypeName -connectionFieldValues $ConnectionFieldValues
 
   }
-<<<<<<< HEAD
   if (Test-AdminRights) {
-=======
-  try {
-    Test-AdminRights
->>>>>>> b2382117568a4a2fd5e25878d70a848180b6306b
  
     New-RunAsAccount -ResourceGroup $RG `
                      -ApplicationDisplayName $appDisplayName `
@@ -1536,11 +1539,7 @@ $Params = @{
     ApiVersion        = '2015-08-01'
 }
 
-<<<<<<< HEAD
 if (-NOT (Get-AzureRmResource @Params -EA SilentlyContinue) ) { # check if it already exists
-=======
-if (-NOT (Get-AzureRmResource @Params) ) { # check if it already exists
->>>>>>> b2382117568a4a2fd5e25878d70a848180b6306b
   #this new function  will be placed into the correct location
   $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
   New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
@@ -1727,7 +1726,7 @@ $SydVMSSConfig=Set-AzureRmVmssStorageProfile -VirtualMachineScaleSet $SydVMSSCon
                              -ImageReferenceOffer WindowsServer `
                              -ImageReferenceSku 2016-Datacenter `
                              -ImageReferenceVersion latest `
-                             -OsDiskCreateOption "FromImage" -OsDiskCaching "None"
+                             -OsDiskCreateOption 'FromImage' -OsDiskCaching 'None'
 
 # Set up information for authenticating with the virtual machine
 $SydVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydVMSSConfig `
@@ -2169,7 +2168,7 @@ else {
     }
     Write-Verbose -Message 'Creating SQL database'
     if (-NOT (Get-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName -EA SilentlyContinue) ) {
-      $tags=@{key0="value0";key1="value1";key2="value2"}
+      $tags=@{key0='value0';key1='value1';key2='value2'}
       New-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName  -Edition Standard -Tags $tags
     }
 #endregion
@@ -2285,7 +2284,7 @@ Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
 #region APImanagement
 Write-Verbose -Message 'creating API Management. (Sydney)'  # WARNING: this takes 30 minutes..
 if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
-New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization "myOrganization" -AdminEmail $MyEmail -Sku "Developer"
+New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization 'myOrganization' -AdminEmail $MyEmail -Sku 'Developer'
 }
 #endregion
 #region SetPolicy
@@ -2304,11 +2303,11 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 #region DockerContainerRegistry
 #https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
  if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EA SilentlyContinue) ) {
-  if (Test-AzureRmContainerRegistryNameAvailability $RegistryName) {
-    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku "Basic" #-StorageAccountName $SydStorageAccount
+  if (Test-AzureRmContainerRegistryNameAvailability -Name $RegistryName) {
+    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku 'Basic' #-StorageAccountName $SydStorageAccount
   }
   else {
-    Write-Verbose  ( 'Registry name {0} is already in use.' -f $RegistryName )
+    Write-Verbose  -Message ( 'Registry name {0} is already in use.' -f $RegistryName )
   }
  }
  $Registry=Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -ErrorAction SilentlyContinue
@@ -2319,8 +2318,8 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
    # https://github.com/git-for-windows/git/releases/download/v2.17.0.windows.1/Git-2.17.0-64-bit.exe
    # https://download.docker.com/win/stable/Docker%20for%20Windows%20Installer.exe
 
-   $DockerExe="C:\Program Files\Docker\Docker\Docker for Windows.exe"
-   $GitExe="C:\Program Files\Git\cmd\git.exe"
+   $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+   $GitExe='C:\Program Files\Git\cmd\git.exe'
 
    if ( (Test-Path -path $DockerExe) -AND (Test-Path -path $GitExe) ) {
      if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
@@ -2343,7 +2342,7 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
      $creds.Password | docker login $registry.LoginServer -u $creds.Username --password-stdin
 
      #tag our aci-tutorial-app image with its new target image information
-     $image = $registry.LoginServer + "/aci-helloworld:v1"
+     $image = $registry.LoginServer + '/aci-helloworld:v1'
      docker tag  aci-tutorial-app $image
 
      #and finally, push it up to the Azure contaner registry
@@ -2351,22 +2350,22 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 
      ### OK! We can now spin up a running container!
      # must convert the Registry password to a credential
-     $secpasswd = ConvertTo-SecureString $creds.Password -AsPlainText -Force
-     $pscred = New-Object System.Management.Automation.PSCredential($creds.Username, $secpasswd)
+     $secpasswd = ConvertTo-SecureString -String $creds.Password -AsPlainText -Force
+     $pscred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList ($creds.Username, $secpasswd)
 
      #and use a unique DNS name
-     $dnsname = "aci-demo-" + (Get-Random -Maximum 9999)
+     $dnsname = 'aci-demo-' + (Get-Random -Maximum 9999)
      # locations to run containers currently: 'westus,eastus,westeurope,westus2,northeurope,southeastasia'.
 
      New-AzureRmContainerGroup -ResourceGroup $RG  -Location southeastasia `
-                               -Name "mycontainer" -Image $image `
+                               -Name 'mycontainer' -Image $image `
                                -RegistryCredential $pscred `
                                -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
     #
-    Set-Location $CurrentLocation
+    Set-Location -Path $CurrentLocation
    }
    else {
-     Write-Verbose 'GIT and/or DOCKER not installed. Skipping...'
+     Write-Verbose -Message 'GIT and/or DOCKER not installed. Skipping...'
    }
  }
 #endregion
@@ -2375,11 +2374,11 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 ## this will need a reboot to take effect
 
   # this app-service will need permission to the KeyVault.
-  $AADClientID     = "<clientID of your Azure AD app>"
-  $AADClientSecret = "<clientSecret of your Azure AD app>"
+  $AADClientID     = '<clientID of your Azure AD app>'
+  $AADClientSecret = '<clientSecret of your Azure AD app>'
 
   # which keyvault will hold the encryption keys.
-  $VaultName= "MyKeyVault"
+  $VaultName= 'MyKeyVault'
   $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
 
 
