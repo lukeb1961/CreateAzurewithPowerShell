@@ -1451,7 +1451,12 @@ $vstsBasicAuthHeader=$headers
     Create-AutomationConnectionAsset -resourceGroup $ResourceGroup -automationAccountName $AutomationAccountName -connectionAssetName $ConnectionAssetName -connectionTypeName $ConnectionTypeName -connectionFieldValues $ConnectionFieldValues
 
   }
+<<<<<<< HEAD
   if (Test-AdminRights) {
+=======
+  try {
+    Test-AdminRights
+>>>>>>> b2382117568a4a2fd5e25878d70a848180b6306b
  
     New-RunAsAccount -ResourceGroup $RG `
                      -ApplicationDisplayName $appDisplayName `
@@ -1531,7 +1536,11 @@ $Params = @{
     ApiVersion        = '2015-08-01'
 }
 
+<<<<<<< HEAD
 if (-NOT (Get-AzureRmResource @Params -EA SilentlyContinue) ) { # check if it already exists
+=======
+if (-NOT (Get-AzureRmResource @Params) ) { # check if it already exists
+>>>>>>> b2382117568a4a2fd5e25878d70a848180b6306b
   #this new function  will be placed into the correct location
   $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
   New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
