@@ -1,5 +1,6 @@
 ﻿#Requires -version 5
 #Requires -Module AzureRM, PKI, PowerShellGet, nx
+#Requires -RunAsAdministrator
 #run as admin to create self-signed certs for automation RunAsAccount etc. (it needs admin for the local cert store, etc.)
 
 <# ToDo
@@ -15,7 +16,7 @@
 #region SelectSubscription
 function Get-UserPromptChoice 
 {
-    Param($options)
+    Param([string[]]$options)
 
     $arrOptions = @()
     $i = 1
@@ -107,6 +108,8 @@ $scriptContainer    = 'shellscripts'
 $DSCconfigContainer = 'dscconfigs'
 $DSCmoduleContainer = 'dscmodules'   # module.zip(s) have to be in a storage container
                                      # if they are to be uploaded into Automation.
+
+$ContainerPolicyName = 'ScriptContainerPolicy'
 
 $functionAppName   = $MyName + '-FunctionApp'
 
@@ -677,7 +680,7 @@ if ($CBellee) {
 
   if (-NOT (Get-AzureRmNetworkSecurityGroup -Name 'WINNSG' -ResourceGroupName $RG -EA SilentlyContinue)) {
     $WINNSG=New-AzureRmNetworkSecurityGroup -Name 'WINNSG' -ResourceGroupName $RG -Location $Sydney `
-                                            -Tag @{Name='WinNSGTagName';Value='WinNSGTagValue'} -SecurityRules $rule1, $rule2
+                                            -Tag @{Name='WinNSGTagName';Value=$MyName} -SecurityRules $rule1, $rule2
   }
 
   #NSG for Linux subnets
@@ -688,7 +691,7 @@ if ($CBellee) {
 
   if (-NOT (Get-AzureRmNetworkSecurityGroup -Name 'LXNSG' -ResourceGroupName $RG -EA SilentlyContinue)) {
    $LXNSG = New-AzureRmNetworkSecurityGroup -Name 'LXNSG' -ResourceGroupName $RG -Location $Sydney `
-                                            -Tag @{Name='LxNSGTagName';Value='LxNSGTagValue'} -SecurityRules $ruleSSH
+                                            -Tag @{Name='LxNSGTagName';Value=$MyName} -SecurityRules $ruleSSH
   }
 #endregion
 #region Vnets
@@ -1042,7 +1045,8 @@ $vstsBasicAuthHeader=$headers
   $SydKeys   =Get-AzureRmStorageAccountKey -ResourceGroupName $RG -Name $SydStorageAccount
   $SydKey = $SydKeys[0].Value
   $SydContext = New-AzureStorageContext -StorageAccountName $SydStorageAccount -StorageAccountKey $SydKey
- 
+ #$SydContext = New-AzureStorageContext -StorageAccountName $SydStorageAccount -UseConnectedAccount 
+
   Write-Verbose -Message 'Create storage Containers (Syd)'
   if (-NOT (Get-AzureStorageContainer -Name $DSCconfigContainer -Context $Sydcontext -EA SilentlyContinue)) {
       $null=New-AzureStorageContainer -Name $DSCconfigContainer -Context $Sydcontext -Permission Container
@@ -1068,6 +1072,7 @@ $vstsBasicAuthHeader=$headers
   $MelKeys   =Get-AzureRmStorageAccountKey -ResourceGroupName $RG -Name $MelStorageAccount
   $MelKey = $MelKeys[0].Value
   $MelContext = New-AzureStorageContext -StorageAccountName $MelStorageAccount -StorageAccountKey $MelKey
+ #$MelContext = New-AzureStorageContext -StorageAccountName $MelStorageAccount -UseConnectedAccount 
 
   Write-Verbose -Message 'Create storage Containers (Mel)'
   if (-NOT (Get-AzureStorageContainer -Name $DSCconfigContainer -Context $Melcontext -EA SilentlyContinue)) {
@@ -1082,6 +1087,18 @@ $vstsBasicAuthHeader=$headers
   if (-NOT (Get-AzureStorageContainer -Name $runBookContainer   -Context $Melcontext -EA SilentlyContinue)) {
       $null=New-AzureStorageContainer -Name $runBookContainer   -Context $Melcontext -Permission Container
   }
+
+  $StartTime  = (Get-Date).ToUniversalTime().AddMinutes(-5)
+  $ExpiryTime = (Get-Date).ToUniversalTime().AddYears(10) 
+
+  # Sets up a Stored Access Policy and a Shared Access Signature for a container  
+  if (-NOT ($policy = Get-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -EA SilentlyContinue)) {
+   $policy = New-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -StartTime $StartTime -ExpiryTime $ExpiryTime  -Permission rwld
+  }
+
+  # Gets the Shared Access Signature for the policy  
+  $sas = New-AzureStorageContainerSASToken -name $scriptContainer -Policy $ContainerPolicyName -Context  $MelContext
+  Write-Host "Shared Access Signature= '$($sas.Substring(1))'"
 
 # see https://docs.microsoft.com/en-us/rest/api/storageservices/Constructing-an-Account-SAS
 # New-AzureStorageAccountSASToken -service Blob -ResourceType Container `
@@ -1302,7 +1319,7 @@ $vstsBasicAuthHeader=$headers
    Import-AzureRmAutomationRunbook -ResourceGroupName $RG -AutomationAccountName $MelAutomation `
                                  -Path $RB.Fullname -Name $RB.Basename -Type PowerShell `
                                  -Description 'A powershell Runbook' `
-                                 -Tag @{Name='RunbookTagName';Value='RunBookTagValue'} `
+                                 -Tag @{Name='RunbookTagName';Value=$MyName} `
                                  -Force
    Publish-AzureRmAutomationRunbook -ResourceGroupName $RG -AutomationAccountName $MelAutomation `
                                   -Name $RB.Basename
@@ -1336,9 +1353,14 @@ $vstsBasicAuthHeader=$headers
        )
 
     Add-Type -AssemblyName Microsoft.Azure.Commands.Common.Graph.RBAC
-    private:function Create-SelfSignedCertificate {
+    function private:Create-SelfSignedCertificate {
  
-      param([Parameter(Mandatory = $true)] [string] $certificateName, [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,[Parameter(Mandatory = $true)] [string] $certPath,[Parameter(Mandatory = $true)] [string] $certPathCer, [Parameter(Mandatory = $true)] [string] $selfSignedCertNoOfMonthsUntilExpired )
+      param([Parameter(Mandatory = $true)] [string] $certificateName, 
+            [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,
+            [Parameter(Mandatory = $true)] [string] $certPath,
+            [Parameter(Mandatory = $true)] [string] $certPathCer, 
+            [Parameter(Mandatory = $true)] [string] $selfSignedCertNoOfMonthsUntilExpired )
+
         Write-Verbose -Message 'Create Self-Signed Certificate'
         $CertStoreLocation='cert:\LocalMachine\My'
 
@@ -1355,7 +1377,9 @@ $vstsBasicAuthHeader=$headers
 
     function private:Create-ServicePrincipal {  
 
-      param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
+      param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, 
+             [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
+
         Write-Verbose -Message 'Create Service Principal'
         $CurrentDate = Get-Date
         $keyValue = [System.Convert]::ToBase64String($PfxCert.GetRawCertData())
@@ -1371,17 +1395,18 @@ $vstsBasicAuthHeader=$headers
 
         # Use key credentials and create an Azure AD application
         $Application = New-AzureRmADApplication -DisplayName $ApplicationDisplayName -HomePage ('http://' + $applicationDisplayName) -IdentifierUris ('http://' + $KeyId) -KeyCredentials $KeyCredential
-        $ServicePrincipal = New-AzureRMADServicePrincipal -ApplicationId $Application.ApplicationId 
+        $ServicePrincipal = New-AzureRMADServicePrincipal -ApplicationId $Application.ApplicationId -Role 'Contributor' 
         $GetServicePrincipal = Get-AzureRmADServicePrincipal -ObjectId $ServicePrincipal.Id
 
         # Sleep here for a few seconds to allow the service principal application to become active (ordinarily takes a few seconds)
         Start-Sleep -Seconds 15
         $NewRole = New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue
         $Retries = 0;
-        While ($NewRole -eq $null -and $Retries -le 6) {
+        While ( (-NOT ($NewRole)) -and $Retries -le 6) {
             Start-Sleep -Seconds 10
-            New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId | Write-Verbose -ErrorAction SilentlyContinue
-            $NewRole = Get-AzureRMRoleAssignment -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue
+            if (-NOT ( $NewRole = Get-AzureRMRoleAssignment -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue)) {
+             $NewRole = New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId | Write-Verbose -ErrorAction SilentlyContinue
+            }
             $Retries++;
         }
         return $Application.ApplicationId.ToString();
@@ -1389,7 +1414,13 @@ $vstsBasicAuthHeader=$headers
 
     function private:Create-AutomationCertificateAsset {
         
-      param ([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $certificateAssetName, [Parameter(Mandatory = $true)] [string] $certPath, [Parameter(Mandatory = $true)] [string] $certPlainPassword, [Parameter(Mandatory = $true)] [bool] $Exportable)
+      param ([Parameter(Mandatory = $true)] [string] $resourceGroup, 
+             [Parameter(Mandatory = $true)] [string] $automationAccountName, 
+             [Parameter(Mandatory = $true)] [string] $certificateAssetName, 
+             [Parameter(Mandatory = $true)] [string] $certPath, 
+             [Parameter(Mandatory = $true)] [string] $certPlainPassword, 
+             [Parameter(Mandatory = $true)] [bool]   $Exportable)
+
         Write-Verbose -Message 'Create Automation Certificate Asset'
         $CertPassword = ConvertTo-SecureString -String $certPlainPassword -AsPlainText -Force   
         Remove-AzureRmAutomationCertificate -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $certificateAssetName -ErrorAction SilentlyContinue
@@ -1398,10 +1429,16 @@ $vstsBasicAuthHeader=$headers
 
     function private:Create-AutomationConnectionAsset {
         
-      param([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $connectionAssetName, [Parameter(Mandatory = $true)] [string] $connectionTypeName, [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
+      param([Parameter(Mandatory = $true)] [string] $resourceGroup, 
+            [Parameter(Mandatory = $true)] [string] $automationAccountName, 
+            [Parameter(Mandatory = $true)] [string] $connectionAssetName, 
+            [Parameter(Mandatory = $true)] [string] $connectionTypeName, 
+            [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
+
         Write-Verbose -Message 'Create Automation Connection Asset'
+        write-verbose -Message ( '{0}:{1}:{2}:{3}' -f $resourceGroup,$automationAccountName,$connectionAssetName,$connectionTypeName )
         Remove-AzureRmAutomationConnection -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -Force -ErrorAction SilentlyContinue
-        New-AzureRmAutomationConnection    -ResourceGroupName $ResourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -ConnectionTypeName $connectionTypeName -ConnectionFieldValues $connectionFieldValues
+        New-AzureRmAutomationConnection    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -ConnectionTypeName $connectionTypeName -ConnectionFieldValues $connectionFieldValues
     }
 
 
@@ -1430,14 +1467,13 @@ $vstsBasicAuthHeader=$headers
     $SubscriptionInfo = Get-AzureRmSubscription -SubscriptionId $SubscriptionId
     $TenantID = $SubscriptionInfo.TenantId 
     $Thumbprint = $PfxCert.Thumbprint
-    $ConnectionFieldValues = @{'ApplicationId' = $ApplicationId; 'TenantId' = $TenantID.TenantId; 'CertificateThumbprint' = $Thumbprint; 'SubscriptionId' = $SubscriptionId}
+    $ConnectionFieldValues = @{'ApplicationId' = $ApplicationId; 'TenantId' = $TenantID; 'CertificateThumbprint' = $Thumbprint; 'SubscriptionId' = $SubscriptionId}
 
     # Create an Automation connection asset named AzureRunAsConnection in the Automation account. This connection uses the service principal.
     Create-AutomationConnectionAsset -resourceGroup $ResourceGroup -automationAccountName $AutomationAccountName -connectionAssetName $ConnectionAssetName -connectionTypeName $ConnectionTypeName -connectionFieldValues $ConnectionFieldValues
 
   }
-  try {
-    Test-AdminRights
+  if (Test-AdminRights) {
  
     New-RunAsAccount -ResourceGroup $RG `
                      -ApplicationDisplayName $appDisplayName `
@@ -1448,7 +1484,7 @@ $vstsBasicAuthHeader=$headers
                      -SelfSignedCertNoOfMonthsUntilExpired 12
                       
   }
-  catch {
+  Else {
     Write-Warning -Message 'Skipping New-RunAsAccount, as local Cert generation and store requires Administrator rights.'
     }
  #endregion
@@ -1458,6 +1494,7 @@ $vstsBasicAuthHeader=$headers
   ## see https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
   ## see https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
 
+ Write-Verbose -mess 'Create Azure Function App engine'
  $functionAppResource = Get-AzureRmResource | Where-Object {$_.ResourceName -eq $functionAppName -And $_.ResourceType -eq 'Microsoft.Web/Sites'}
  if ($null -eq $functionAppResource) {
    $functionAppResource=New-AzureRmResource -ResourceType 'Microsoft.Web/Sites' -ResourceName $functionAppName -Kind 'functionapp' -Location $Sydney -ResourceGroupName $RG -Properties @{} -Force
@@ -1508,6 +1545,7 @@ $props = @{
   files = @{ 'run.ps1' = $SB }
 }
 
+ Write-Verbose -message ('Create Azure Function: "{0}"' -f  $functionName )
 
 $ResourceName='{0}/{1}' -f $functionAppResource.Name, $functionName # check for existing item
 $Params = @{
@@ -1515,9 +1553,13 @@ $Params = @{
     ResourceType      = 'Microsoft.Web/sites/functions'
     ResourceName      = $ResourceName
     ApiVersion        = '2015-08-01'
+    ErrorAction       = 'SilentlyContinue'
 }
 
-if (-NOT (Get-AzureRmResource @Params) ) { # check if it already exists
+try {
+ $null=Get-AzureRmResource @Params  # check if it already exists
+}
+catch {
   #this new function  will be placed into the correct location
   $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
   New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
@@ -1682,7 +1724,7 @@ $OIWSurl=$OIWS.PortalUrl
 $SydVMSSConfig = New-AzureRmVmssConfig -Location $Sydney `
                                        -SkuCapacity 2 -SkuName Standard_DS2 `
                                        -UpgradePolicyMode Automatic `
-                                       -Tag @{Name='AnotherTagName';Value='AnotherTagValue'}
+                                       -Tag @{Name='AnotherTagName';Value=$MyName}
 <#
   ### cannot get this to work?
   #Get-AzureRmVMExtensionImageType
@@ -1703,7 +1745,8 @@ $SydVMSSConfig=Set-AzureRmVmssStorageProfile -VirtualMachineScaleSet $SydVMSSCon
                              -ImageReferencePublisher MicrosoftWindowsServer `
                              -ImageReferenceOffer WindowsServer `
                              -ImageReferenceSku 2016-Datacenter `
-                             -ImageReferenceVersion latest
+                             -ImageReferenceVersion latest `
+                             -OsDiskCreateOption 'FromImage' -OsDiskCaching 'None'
 
 # Set up information for authenticating with the virtual machine
 $SydVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydVMSSConfig `
@@ -2128,10 +2171,10 @@ else {
                                       -ScaleActionCooldown 00:05:00 -ScaleActionDirection Decrease -ScaleActionValue 1
 
     $profile1 = New-AzureRmAutoscaleProfile -DefaultCapacity 3 -MaximumCapacity 10 -MinimumCapacity 2 `
-                                            -Rules $rule1,$rule2 -Name 'autoprofile1'
+                                            -Rule $rule1,$rule2 -Name 'autoprofile1'
 
     Add-AzureRmAutoscaleSetting -Name 'autosetting1' -Location $Sydney -ResourceGroup $RG `
-                                -TargetResourceId $MetricResourceId -AutoscaleProfiles $profile1 
+                                -TargetResourceId $MetricResourceId -AutoscaleProfile $profile1 
   }
   else {
     $ErrorActionPreference='SilentlyContinue'
@@ -2145,7 +2188,7 @@ else {
     }
     Write-Verbose -Message 'Creating SQL database'
     if (-NOT (Get-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName -EA SilentlyContinue) ) {
-      $tags=@{key0="value0";key1="value1";key2="value2"}
+      $tags=@{key0='value0';key1='value1';key2='value2'}
       New-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName  -Edition Standard -Tags $tags
     }
 #endregion
@@ -2261,7 +2304,7 @@ Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
 #region APImanagement
 Write-Verbose -Message 'creating API Management. (Sydney)'  # WARNING: this takes 30 minutes..
 if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
-New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization "myOrganization" -AdminEmail $MyEmail -Sku "Developer"
+New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization 'myOrganization' -AdminEmail $MyEmail -Sku 'Developer'
 }
 #endregion
 #region SetPolicy
@@ -2280,11 +2323,11 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 #region DockerContainerRegistry
 #https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
  if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EA SilentlyContinue) ) {
-  if (Test-AzureRmContainerRegistryNameAvailability $RegistryName) {
-    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku "Basic" #-StorageAccountName $SydStorageAccount
+  if (Test-AzureRmContainerRegistryNameAvailability -Name $RegistryName) {
+    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku 'Basic' #-StorageAccountName $SydStorageAccount
   }
   else {
-    Write-Verbose  ( 'Registry name {0} is already in use.' -f $RegistryName )
+    Write-Verbose  -Message ( 'Registry name {0} is already in use.' -f $RegistryName )
   }
  }
  $Registry=Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -ErrorAction SilentlyContinue
@@ -2295,8 +2338,8 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
    # https://github.com/git-for-windows/git/releases/download/v2.17.0.windows.1/Git-2.17.0-64-bit.exe
    # https://download.docker.com/win/stable/Docker%20for%20Windows%20Installer.exe
 
-   $DockerExe="C:\Program Files\Docker\Docker\Docker for Windows.exe"
-   $GitExe="C:\Program Files\Git\cmd\git.exe"
+   $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+   $GitExe='C:\Program Files\Git\cmd\git.exe'
 
    if ( (Test-Path -path $DockerExe) -AND (Test-Path -path $GitExe) ) {
      if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
@@ -2319,7 +2362,7 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
      $creds.Password | docker login $registry.LoginServer -u $creds.Username --password-stdin
 
      #tag our aci-tutorial-app image with its new target image information
-     $image = $registry.LoginServer + "/aci-helloworld:v1"
+     $image = $registry.LoginServer + '/aci-helloworld:v1'
      docker tag  aci-tutorial-app $image
 
      #and finally, push it up to the Azure contaner registry
@@ -2327,22 +2370,22 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 
      ### OK! We can now spin up a running container!
      # must convert the Registry password to a credential
-     $secpasswd = ConvertTo-SecureString $creds.Password -AsPlainText -Force
-     $pscred = New-Object System.Management.Automation.PSCredential($creds.Username, $secpasswd)
+     $secpasswd = ConvertTo-SecureString -String $creds.Password -AsPlainText -Force
+     $pscred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList ($creds.Username, $secpasswd)
 
      #and use a unique DNS name
-     $dnsname = "aci-demo-" + (Get-Random -Maximum 9999)
+     $dnsname = 'aci-demo-' + (Get-Random -Maximum 9999)
      # locations to run containers currently: 'westus,eastus,westeurope,westus2,northeurope,southeastasia'.
 
      New-AzureRmContainerGroup -ResourceGroup $RG  -Location southeastasia `
-                               -Name "mycontainer" -Image $image `
+                               -Name 'mycontainer' -Image $image `
                                -RegistryCredential $pscred `
                                -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
     #
-    Set-Location $CurrentLocation
+    Set-Location -Path $CurrentLocation
    }
    else {
-     Write-Verbose 'GIT and/or DOCKER not installed. Skipping...'
+     Write-Verbose -Message 'GIT and/or DOCKER not installed. Skipping...'
    }
  }
 #endregion
@@ -2351,11 +2394,11 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 ## this will need a reboot to take effect
 
   # this app-service will need permission to the KeyVault.
-  $AADClientID     = "<clientID of your Azure AD app>"
-  $AADClientSecret = "<clientSecret of your Azure AD app>"
+  $AADClientID     = '<clientID of your Azure AD app>'
+  $AADClientSecret = '<clientSecret of your Azure AD app>'
 
   # which keyvault will hold the encryption keys.
-  $VaultName= "MyKeyVault"
+  $VaultName= 'MyKeyVault'
   $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
 
 
