@@ -1092,9 +1092,13 @@ $vstsBasicAuthHeader=$headers
   $ExpiryTime = (Get-Date).ToUniversalTime().AddYears(10) 
 
   # Sets up a Stored Access Policy and a Shared Access Signature for a container  
+<<<<<<< HEAD
   if (-NOT ($policy = Get-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -EA SilentlyContinue)) {
    $policy = New-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -StartTime $StartTime -ExpiryTime $ExpiryTime  -Permission rwld
   }
+=======
+  $policy = New-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -StartTime $StartTime -ExpiryTime $ExpiryTime  -Permission rwld
+>>>>>>> 581eefe39f14c645caf93485d45ad60f241baa45
 
   # Gets the Shared Access Signature for the policy  
   $sas = New-AzureStorageContainerSASToken -name $scriptContainer -Policy $ContainerPolicyName -Context  $MelContext
@@ -1375,11 +1379,17 @@ $vstsBasicAuthHeader=$headers
         Export-Certificate    -Cert ($CertStoreLocation + '\' + $Cert.Thumbprint) -FilePath $certPathCer -Type CERT | Write-Verbose
     }
 
-    function private:Create-ServicePrincipal {  
+    private:function Create-ServicePrincipal {  
 
       param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, 
              [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
 
+<<<<<<< HEAD
+      param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, 
+             [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
+
+=======
+>>>>>>> 581eefe39f14c645caf93485d45ad60f241baa45
         Write-Verbose -Message 'Create Service Principal'
         $CurrentDate = Get-Date
         $keyValue = [System.Convert]::ToBase64String($PfxCert.GetRawCertData())
@@ -1412,14 +1422,18 @@ $vstsBasicAuthHeader=$headers
         return $Application.ApplicationId.ToString();
     }
 
-    function private:Create-AutomationCertificateAsset {
+    private:function Create-AutomationCertificateAsset {
         
+<<<<<<< HEAD
       param ([Parameter(Mandatory = $true)] [string] $resourceGroup, 
              [Parameter(Mandatory = $true)] [string] $automationAccountName, 
              [Parameter(Mandatory = $true)] [string] $certificateAssetName, 
              [Parameter(Mandatory = $true)] [string] $certPath, 
              [Parameter(Mandatory = $true)] [string] $certPlainPassword, 
              [Parameter(Mandatory = $true)] [bool]   $Exportable)
+=======
+      param ([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $certificateAssetName, [Parameter(Mandatory = $true)] [string] $certPath, [Parameter(Mandatory = $true)] [string] $certPlainPassword, [Parameter(Mandatory = $true)] [bool] $Exportable)
+>>>>>>> 581eefe39f14c645caf93485d45ad60f241baa45
 
         Write-Verbose -Message 'Create Automation Certificate Asset'
         $CertPassword = ConvertTo-SecureString -String $certPlainPassword -AsPlainText -Force   
@@ -1427,7 +1441,7 @@ $vstsBasicAuthHeader=$headers
         New-AzureRmAutomationCertificate    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $certificateAssetName -Path $certPath -Password $CertPassword -Exportable:$Exportable  | write-verbose
     }
 
-    function private:Create-AutomationConnectionAsset {
+    private:function Create-AutomationConnectionAsset {
         
       param([Parameter(Mandatory = $true)] [string] $resourceGroup, 
             [Parameter(Mandatory = $true)] [string] $automationAccountName, 
@@ -1556,10 +1570,14 @@ $Params = @{
     ErrorAction       = 'SilentlyContinue'
 }
 
+<<<<<<< HEAD
 try {
  $null=Get-AzureRmResource @Params  # check if it already exists
 }
 catch {
+=======
+if (-NOT (Get-AzureRmResource @Params -EA SilentlyContinue) ) { # check if it already exists
+>>>>>>> 581eefe39f14c645caf93485d45ad60f241baa45
   #this new function  will be placed into the correct location
   $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
   New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
