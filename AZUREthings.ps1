@@ -1338,6 +1338,8 @@ $vstsBasicAuthHeader=$headers
   }
  #endregion
  #region RunAsAccount
+  # scripted creation does NOT automatically create the RunAsAccounts whereas the Portal does. (a tickbox)
+  # so the below will do that... 
   Add-Type -AssemblyName System.Security
     
   function New-RunAsAccount {
@@ -1523,7 +1525,7 @@ Out-File -Encoding Ascii -FilePath $res -inputObject "Hello $name"
 #now the definition of the function.json, which is stored alongside run.ps1
 #NOTE the $false will become False in the json, but it seems to expect false (lowercase) 
 #     if we put 'false' with quotes, again doesn't see it as false...
-#     It's a bug. But who is at fault?
+#     It's looking like a bug. But who is at fault?
 
 $props = @{
   config = @{
@@ -2149,6 +2151,7 @@ else {
   }
 #endregion
 #region enableVMSSautoscale
+  #if the VMSS in Sydney is there, add some autoscale coolness based on CPU
 
   If (Get-AzureRmVmss -ResourceGroupName $RG -VMScaleSetName $SydneyWinVMSS -EA SilentlyContinue) {
     Write-Verbose -Message 'Creating VMSS autoscale rules (Sydney)'
@@ -2311,7 +2314,7 @@ New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtN
 if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so do NOT do policy!
   Write-Verbose -Message 'Creating Regional Policy'
   $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
-  if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId)) {
+  if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId -EA SilentlyContinue)) {
     $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
     $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
     $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
@@ -2320,8 +2323,10 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
   }
 }
 #endregion
-#region DockerContainerRegistry
+#region DockerContainers
 #https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
+#region DockerContainerRegistry
+ Write-Verbose -Message 'Creating Docker Registry'
  if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EA SilentlyContinue) ) {
   if (Test-AzureRmContainerRegistryNameAvailability -Name $RegistryName) {
     New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku 'Basic' #-StorageAccountName $SydStorageAccount
@@ -2330,8 +2335,13 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
     Write-Verbose  -Message ( 'Registry name {0} is already in use.' -f $RegistryName )
   }
  }
+#endregion
+ 
  $Registry=Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -ErrorAction SilentlyContinue
+
  if ($registry) {
+#region BuildDockerImage
+   Write-Verbose -Message 'Building/uploading Docker container "aci-helloworld"'
    # we will need creds when we use Docker to upload container images to our repo in this registry
    $creds = Get-AzureRmContainerRegistryCredential -Registry $Registry 
    # assume GIT and DOCKER are installed
@@ -2341,6 +2351,7 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
    $GitExe='C:\Program Files\Git\cmd\git.exe'
 
+   #check if Docker is installed locally
    if ( (Test-Path -path $DockerExe) -AND (Test-Path -path $GitExe) ) {
      if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
        New-Item -Path "$HOME\Documents\Git" -ItemType Directory
@@ -2357,7 +2368,8 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
      #build the image
      docker build ./aci-helloworld -t aci-tutorial-app
      #docker images  should show the built image
-
+#endregion
+#region UploadDockerImage
      # now have Docker connect to our Azure container registry
      $creds.Password | docker login $registry.LoginServer -u $creds.Username --password-stdin
 
@@ -2365,9 +2377,10 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
      $image = $registry.LoginServer + '/aci-helloworld:v1'
      docker tag  aci-tutorial-app $image
 
-     #and finally, push it up to the Azure contaner registry
+     #and finally, push it up to the Azure container registry
      docker push $image
-
+#endregion
+#region LaunchDockerContainer
      ### OK! We can now spin up a running container!
      # must convert the Registry password to a credential
      $secpasswd = ConvertTo-SecureString -String $creds.Password -AsPlainText -Force
@@ -2381,7 +2394,7 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
                                -Name 'mycontainer' -Image $image `
                                -RegistryCredential $pscred `
                                -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
-    #
+#endregion
     Set-Location -Path $CurrentLocation
    }
    else {
