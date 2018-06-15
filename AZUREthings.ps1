@@ -9,8 +9,6 @@
   https://github.com/mariuszdotnet/azure-vmss-templates/blob/master/vm-lnx-lad/azuredeploy.ps1
   service fabric with containers
   https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
-  Containers
-  https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
 #>
 
 #region SelectSubscription
@@ -2338,6 +2336,43 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 }
 #endregion
 #region DockerContainers
+  function Test-IsGitInstalled {
+
+    $IsGitInstalled=$False
+    $GitExe='C:\Program Files\Git\cmd\git.exe'
+
+    if (Test-Path -path $GitExe) {$IsGitInstalled=$True}
+
+    Write-Output -InputObject $IsGitInstalled
+  }
+
+  function Test-IsDockerInstalled {
+
+    $IsDockerInstalled=$false
+    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+
+
+    if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
+
+    Write-Output -InputObject $IsDockerInstalled
+  }
+
+  function Test-IsDockerWindowsMode {
+
+    $IsDockerWindowsMode=$false
+    if (Test-IsDockerInstalled) {
+      $DockerVersion =  (Docker version)
+
+      $DockerVersion | Foreach-Object {
+         if ( $_ -Match 'OS/Arch:\s+(?<OS>\w+)/amd64' ) {
+          if ('windows' -eq $matches.OS) {$IsDockerWindowsMode=$true}
+         }
+      }
+    }
+    Write-Output -InputObject $IsDockerWindowsMode
+  }
+
+
 #https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
 #region DockerContainerRegistry
  Write-Verbose -Message 'Creating Docker Registry'
@@ -2358,15 +2393,12 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
    Write-Verbose -Message 'Building/uploading Docker container "aci-helloworld"'
    # we will need creds when we use Docker to upload container images to our repo in this registry
    $creds = Get-AzureRmContainerRegistryCredential -Registry $Registry 
-   # assume GIT and DOCKER are installed
+
    # https://github.com/git-for-windows/git/releases/download/v2.17.0.windows.1/Git-2.17.0-64-bit.exe
    # https://download.docker.com/win/stable/Docker%20for%20Windows%20Installer.exe
 
-   $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
-   $GitExe='C:\Program Files\Git\cmd\git.exe'
-
    #check if Docker is installed locally
-   if ( (Test-Path -path $DockerExe) -AND (Test-Path -path $GitExe) ) {
+   if ( (Test-IsDockerInstalled) -AND (Test-IsGitInstalled) ) {
      if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
        New-Item -Path "$HOME\Documents\Git" -ItemType Directory
      }
@@ -2436,4 +2468,76 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
                                         -Force
   }
 
+#endregion
+#region DockerWindowsContainer
+
+  function Test-IsDockerInstalled {
+
+    $IsDockerInstalled=$false
+    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+
+
+    if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
+
+    Write-Output -InputObject $IsDockerInstalled
+  }
+
+  function Test-IsDockerWindowsMode {
+
+    $IsDockerWindowsMode=$false
+    if (Test-IsDockerInstalled) {
+      $DockerVersion = (Docker version)
+
+      $DockerVersion | Foreach-Object {
+         if ( $_ -Match 'OS/Arch:\s+(?<OS>\w+)/amd64' ) {
+          if ('windows' -eq $matches.OS) {$IsDockerWindowsMode=$true}
+         }
+      }
+    }
+    Write-Output -InputObject $IsDockerWindowsMode
+  }
+
+if (Test-IsDockerWindowsMode) {
+
+$content = @'
+# Use an official Python runtime as a base image
+FROM python:2.7-windowsservercore
+
+# Set the working directory to /app
+WORKDIR /app
+
+# Copy the current directory contents into the container at /app
+ADD . /app
+
+# Install any needed packages specified in requirements.txt
+RUN pip install -r requirements.txt
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Define environment variable
+ENV NAME World
+
+# Run app.py when the container launches
+CMD ["python", "app.py"]
+'@
+
+ $directory  = 'PythonWindowsContainer'
+ $pathname   = '{0}\{1}' -f $HOME, $directory
+ $Dockerfile = '{0}\{1}' -f $pathname, 'Dockerfile'
+
+ if (-NOT (Test-Path -Path $pathname)) {
+  $folder=New-Item -ItemType Directory -Path $pathname
+ }
+
+ $content | Out-File -FilePath $Dockerfile -Force -Encoding utf8
+
+ $OriginalLocation=Get-Location
+ Set-Location -Path $pathname
+ Get-Content Dockerfile | docker build -
+
+}
+else {
+  write-verbose -Message 'Docker is NOT in Windows mode'
+}
 #endregion
