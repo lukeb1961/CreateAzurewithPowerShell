@@ -226,6 +226,7 @@ $null=Get-ChildItem -Path $LOCALTEMPMODULES | Remove-Item -Force
 # ensure that any Modules required are also to be zipped, ready to be uploaded and then deployed into Automation.
 foreach ($DSCMODULE in $DSCMODULES) {
   if (-NOT (Get-Module -Name $DSCMODULE -ListAvailable)) {
+    Write-Verbose -Message ('Installing module {0}' -f $DSCMODULE)
     Find-Module -Name $DSCMODULE | Install-Module -Force -AllowClobber -Scope CurrentUser
   }
   $moduleFolder=(Get-Module -Name $DSCMODULE -ListAvailable).ModuleBase
@@ -979,6 +980,12 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
  }
  $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
 
+ if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
+  Write-Verbose -Message ("Creating RG '{0}'" -f $RGSF)
+  $null = New-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
+ }
+ $ServiceFabricMel = Get-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
+
  Write-Verbose -Message 'Creating (Service Fabric) Key Vault (Mel)'
  #Service Fabric needs its own RG and Vault.
  if (-NOT ( Get-AzureRmKeyVault -ResourceGroupName $RGSF -VaultName $KeyVaultMelSF -EA SilentlyContinue)) {
@@ -998,6 +1005,7 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
 Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelbourne -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
 Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelSF     -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
 
+ Write-Verbose -Message 'Creating Key Vault Secrets (Mel)'
 $secretvalue = ConvertTo-SecureString -String $user -AsPlainText -Force
 Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name 'AdminUsername' -SecretValue $secretvalue
 
@@ -1312,7 +1320,7 @@ $vstsBasicAuthHeader=$headers
   `
  #endregion
  #region PublishRunBooks
-
+ Write-Verbose -Message 'Importing runbooks'
  $RBooksOnDisk=Get-ChildItem -Path $LOCALTEMPRUNBOOKS
 
  foreach ($RB in $RBooksOnDisk) {
@@ -1438,7 +1446,6 @@ $vstsBasicAuthHeader=$headers
             [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
 
         Write-Verbose -Message 'Create Automation Connection Asset'
-        write-verbose -Message ( '{0}:{1}:{2}:{3}' -f $resourceGroup,$automationAccountName,$connectionAssetName,$connectionTypeName )
         Remove-AzureRmAutomationConnection -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -Force -ErrorAction SilentlyContinue
         New-AzureRmAutomationConnection    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -ConnectionTypeName $connectionTypeName -ConnectionFieldValues $connectionFieldValues
     }
@@ -1476,7 +1483,8 @@ $vstsBasicAuthHeader=$headers
 
   }
   if (Test-AdminRights) {
- 
+    Write-Verbose -Message 'Creating Automation RunAsAccount'
+
     New-RunAsAccount -ResourceGroup $RG `
                      -ApplicationDisplayName $appDisplayName `
                      -AutomationAccountName $MelAutomation `
@@ -2311,16 +2319,22 @@ New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtN
 }
 #endregion
 #region SetPolicy
-if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so do NOT do policy!
+if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so I will NOT risk setting a policy!
   Write-Verbose -Message 'Creating Regional Policy'
+  $RegionsPattern='*australia*'
   $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
-  if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId -EA SilentlyContinue)) {
-    $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
+  try {
+    $PolicyAssignment=Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId
+    }
+    catch {
+    $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like $RegionsPattern}
     $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
     $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
     # this will probably wreck something, so I'll need to TEST this first!
-    # $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $AZURETHINGS.ResourceId -PolicyParameterObject $AllowedLocations
+    $PolicyAssignment=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $AZURETHINGS.ResourceId -PolicyParameterObject $AllowedLocations
   }
+
+  $PolicyAssignment.Properties.parameters.listOfAllowedLocations.value
 }
 #endregion
 #region DockerContainers
@@ -2405,19 +2419,21 @@ if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, 
 #region EncryptVMdisk
 ## apply encryption to an existing/running VM
 ## this will need a reboot to take effect
-
-  # this app-service will need permission to the KeyVault.
-  $AADClientID     = '<clientID of your Azure AD app>'
-  $AADClientSecret = '<clientSecret of your Azure AD app>'
+  Write-Verbose -Message 'Encrypting VM disks'
 
   # which keyvault will hold the encryption keys.
-  $VaultName= 'MyKeyVault'
+
   $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
+  $DiskEncryptionKeyVaultUrl = $MelKeyVault.VaultUri
+  $KeyVaultResourceId        = $MelKeyVault.ResourceId
 
+  if (-NOT (Get-AzureRmVMDiskEncryptionStatus -ResourceGroupName $RG -VMname $MelbourneUbuntu -EA SilentlyContinue)) {
+   Write-Verbose -Message ('Encrypting {0}' -f $MelbourneUbuntu)
+   Set-AzureRmVMDiskEncryptionExtension -ResourceGroupName $RG -VMName $MelbourneUbuntu `
+                                        -DiskEncryptionKeyVaultUrl $DiskEncryptionKeyVaultUrl `
+                                        -DiskEncryptionKeyVaultId  $KeyVaultResourceId `
+                                        -VolumeType OS `
+                                        -Force
+  }
 
-  #Get-AzureRmVMDiskEncryptionStatus [-ResourceGroupName] <String> [-VMName] <String> [[-Name] <String>] [-DefaultProfile <IAzureContextContainer>] [-ExtensionPublisherName 
-  #  <String>] [-ExtensionType <String>] [<CommonParameters>]
-  #Set-AzureRmVMDiskEncryptionExtension -ResourceGroupName $RGName -VMName $VMName -Force `
-  #                                     -AadClientID $AADClientID -AadClientSecret $AADClientSecret `
-  #                                     -DiskEncryptionKeyVaultUrl $MelKeyVault.VaultUri -DiskEncryptionKeyVaultId $MelKeyVault.ResourceId
 #endregion
