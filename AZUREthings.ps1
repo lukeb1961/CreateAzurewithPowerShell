@@ -11,6 +11,19 @@
   https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
 #>
 
+<#
+to collapse/expand all the Regions
+if using Visual Studio Code
+    Fold All folds all region in the editor:
+       Ctrl+K Ctrl+0 (zero) on Windows
+    
+    Unfold All unfolds all regions in the editor:
+       Ctrl+K Ctrl+J on Windows
+
+if using PowerShell ISE
+  Ctrl-M   (toggles each way)
+#>
+
 #region SelectSubscription
 function Get-UserPromptChoice 
 {
