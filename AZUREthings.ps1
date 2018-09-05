@@ -1812,6 +1812,7 @@ $SydlxVMSSConfig=Set-AzureRmVmssStorageProfile -VirtualMachineScaleSet $SydlxVMS
                              -ImageReferenceSku 7.4 `
                              -ImageReferenceVersion latest `
                              -OsDiskCreateOption 'FromImage' -OsDiskCaching 'None'
+<<<<<<< HEAD
 
 # Set up information for authenticating with the virtual machine
 $SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
@@ -1833,6 +1834,29 @@ $SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineSca
 #region WINvmss
   Write-Verbose -Message 'Creating Windows VMSS config (Sydney)'
 
+=======
+
+# Set up information for authenticating with the virtual machine
+$SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
+                                        -AdminUsername $user -AdminPassword $password `
+                                        -ComputerNamePrefix SydLX
+
+$SydVnet      = Get-AzureRmVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
+$SydLXsubnet = Get-AzureRmVirtualNetworkSubnetConfig -Name $LXsubnetName -VirtualNetwork $SydVnet
+$ipConfig = New-AzureRmVmssIpConfig -Name 'VMSSIPConfig' `
+                                    -LoadBalancerBackendAddressPoolsId $SydlxLB.BackendAddressPools[0].Id `
+                                    -SubnetId $SydLXsubnet.Id
+
+# Attach the virtual network to the config object
+$SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScaleSet $SydlxVMSSConfig `
+                                                            -Name 'network-config'  `
+                                                            -Primary $true `
+                                                            -IPConfiguration $ipConfig
+#endregion
+#region WINvmss
+  Write-Verbose -Message 'Creating Windows VMSS config (Sydney)'
+
+>>>>>>> 92506ac8a11662ad4684fde2a0a39cb3b96ce460
 $SydVMSScapacity=2
 
 # Create a VMSS config object
@@ -2878,6 +2902,7 @@ FROM python:2.7-windowsservercore
 
 # Set the working directory to /app
 WORKDIR /app
+<<<<<<< HEAD
 
 # Copy the current directory contents into the container at /app
 ADD . /app
@@ -2903,6 +2928,33 @@ CMD ["python", "app.py"]
   $folder=New-Item -ItemType Directory -Path $pathname
  }
 
+=======
+
+# Copy the current directory contents into the container at /app
+ADD . /app
+
+# Install any needed packages specified in requirements.txt
+RUN pip install -r requirements.txt
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Define environment variable
+ENV NAME World
+
+# Run app.py when the container launches
+CMD ["python", "app.py"]
+'@
+
+ $directory  = 'PythonWindowsContainer'
+ $pathname   = '{0}\{1}' -f $HOME, $directory
+ $Dockerfile = '{0}\{1}' -f $pathname, 'Dockerfile'
+
+ if (-NOT (Test-Path -Path $pathname)) {
+  $folder=New-Item -ItemType Directory -Path $pathname
+ }
+
+>>>>>>> 92506ac8a11662ad4684fde2a0a39cb3b96ce460
  $content | Out-File -FilePath $Dockerfile -Force -Encoding utf8
 
  $OriginalLocation=Get-Location
