@@ -1812,7 +1812,6 @@ $SydlxVMSSConfig=Set-AzureRmVmssStorageProfile -VirtualMachineScaleSet $SydlxVMS
                              -ImageReferenceSku 7.4 `
                              -ImageReferenceVersion latest `
                              -OsDiskCreateOption 'FromImage' -OsDiskCaching 'None'
-<<<<<<< HEAD
 
 # Set up information for authenticating with the virtual machine
 $SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
@@ -1834,29 +1833,6 @@ $SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineSca
 #region WINvmss
   Write-Verbose -Message 'Creating Windows VMSS config (Sydney)'
 
-=======
-
-# Set up information for authenticating with the virtual machine
-$SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
-                                        -AdminUsername $user -AdminPassword $password `
-                                        -ComputerNamePrefix SydLX
-
-$SydVnet      = Get-AzureRmVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
-$SydLXsubnet = Get-AzureRmVirtualNetworkSubnetConfig -Name $LXsubnetName -VirtualNetwork $SydVnet
-$ipConfig = New-AzureRmVmssIpConfig -Name 'VMSSIPConfig' `
-                                    -LoadBalancerBackendAddressPoolsId $SydlxLB.BackendAddressPools[0].Id `
-                                    -SubnetId $SydLXsubnet.Id
-
-# Attach the virtual network to the config object
-$SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScaleSet $SydlxVMSSConfig `
-                                                            -Name 'network-config'  `
-                                                            -Primary $true `
-                                                            -IPConfiguration $ipConfig
-#endregion
-#region WINvmss
-  Write-Verbose -Message 'Creating Windows VMSS config (Sydney)'
-
->>>>>>> 92506ac8a11662ad4684fde2a0a39cb3b96ce460
 $SydVMSScapacity=2
 
 # Create a VMSS config object
@@ -2902,7 +2878,6 @@ FROM python:2.7-windowsservercore
 
 # Set the working directory to /app
 WORKDIR /app
-<<<<<<< HEAD
 
 # Copy the current directory contents into the container at /app
 ADD . /app
@@ -2928,33 +2903,6 @@ CMD ["python", "app.py"]
   $folder=New-Item -ItemType Directory -Path $pathname
  }
 
-=======
-
-# Copy the current directory contents into the container at /app
-ADD . /app
-
-# Install any needed packages specified in requirements.txt
-RUN pip install -r requirements.txt
-
-# Make port 80 available to the world outside this container
-EXPOSE 80
-
-# Define environment variable
-ENV NAME World
-
-# Run app.py when the container launches
-CMD ["python", "app.py"]
-'@
-
- $directory  = 'PythonWindowsContainer'
- $pathname   = '{0}\{1}' -f $HOME, $directory
- $Dockerfile = '{0}\{1}' -f $pathname, 'Dockerfile'
-
- if (-NOT (Test-Path -Path $pathname)) {
-  $folder=New-Item -ItemType Directory -Path $pathname
- }
-
->>>>>>> 92506ac8a11662ad4684fde2a0a39cb3b96ce460
  $content | Out-File -FilePath $Dockerfile -Force -Encoding utf8
 
  $OriginalLocation=Get-Location
@@ -3035,6 +2983,120 @@ $certfile=Get-ChildItem -path "$certfolder\$RGSF*.pfx" |
 Write-Verbose -Message 'Importing into Cert: '
 Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
                       -CertStoreLocation 'Cert:\CurrentUser\My' -Exportable 
+#endregion
+#region AppGateway
+
+# Where
+$AppGwRG  = 'appgate'
+$Sydney   = 'AustraliaEast'
+
+# VNET
+$VnetName              = 'AppGateVnet'
+$VnetAddrPrefix        = '10.7.0.0/16'
+$AppGwSubnetAddrPrefix = '10.7.1.0/24'
+$AppGWsubnetName       = 'AppGWsubnet'
+$BESubnetAddrPrefix    = '10.7.2.0/24'
+$BESubnetName          = 'BackEndSubnet'
+
+# App Gateway things
+$appGwPIPname  = 'appgateway-ip'
+$appGwDNSname  = 'thisappgateway'
+$appGwNicName  = 'appGwNIC'
+
+$AppGwName     = 'stdappgateway'
+$gwSKUname     = 'Standard_Medium'
+$gwSKUTier     = 'Standard'
+$gwSKUCapacity = 2
+
+$Protocol  = 'Http'
+
+$GWipConfName = 'gwIPConfig'
+
+$GWfeConfName = 'gwFEIPConfig'
+$GWfePortName = 'gwFEport'
+$GwfePort     =  80
+
+$GwbePoolName        = 'gwBEpool'
+$GwbePoolSettings    = 'gwBEpoolSettings'
+$GwbeRequTimeout     =  30
+$cookieBasedAffinity = 'Disabled'
+$GwbePort            =  80
+
+$GwListenerName    = 'appgateListener'
+$GwRoutingRuleName = 'GwrrRule1'
+$GwRuleType        = 'Basic'
+
+##########################################
+
+
+## 1. ensure the ResourceGroup exists
+if (-NOT (Get-AzureRmResourceGroup -Name $RG -EA SilentlyContinue)) {
+  $null = New-AzureRmResourceGroup -Name $RG -Location $Sydney
+}
+While (-NOT ($AZURETHINGS) ) {   # sometimes this can take a few seconds, so wait to be sure it's done.
+  $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
+  start-sleep -Seconds 2
+}
+
+
+
+## 2. ensure there is a VNET for this App Gateway
+if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetName -ResourceGroupName $RG -EA SilentlyContinue)) {
+  $AppGWsubnet = New-AzureRMVirtualNetworkSubnetConfig -Name $AppGWsubnetName -AddressPrefix $AppGwSubnetAddrPrefix
+  $BESubnet    = New-AzureRMVirtualNetworkSubnetConfig -Name $BESubnetName    -AddressPrefix $BESubnetAddrPrefix
+  $Vnet=New-AzureRMVirtualNetwork -Name $VnetName  -ResourceGroupName $RG -Location $Sydney `
+                                     -AddressPrefix $VnetAddrPrefix -Subnet $AppGWsubnet,$BESubnet
+  $null=Set-AzureRMVirtualNetwork -VirtualNetwork $Vnet
+ }
+
+$vnet = Get-AzureRmVirtualNetwork  -ResourceGroupName $RG -Name $VnetName
+
+$AppGwsubnet = $vnet.Subnets | Where-Object {$_.Name -eq $AppGWsubnetName}  ## MUST use the seperate AppGwSubnet subnet for the AppGateway
+$BEsubnet    = $vnet.Subnets | Where-Object {$_.Name -eq $BESubnetName   }  ## use the BackEnd subnet for the NICS
+
+# 3. ensure we have NICs to use in the BackEnd
+$BackendIPaddresses = @()
+$AddressPrefix=$BEsubnet.AddressPrefix.Substring(0,$BEsubnet.AddressPrefix.LastIndexOf('.') + 1) 
+for ($i=0;$i -lt $gwSKUCapacity; $i++) {
+  $NICname = '{0}-{1}' -f $appGwNicName, $i
+  $NICIPAddress = $AddressPrefix + ($i + 4)
+  if (-NOT (Get-AzureRmNetworkInterface -Name $NICname  -ResourceGroupName $RG -EA SilentlyContinue)) {
+      $null=New-AzureRmNetworkInterface -Name $NICname  -ResourceGroupName $RG -Location $Sydney -SubnetId $BEsubnet.Id -PrivateIpAddress $NICIPAddress 
+  }
+  $NIC = Get-AzureRmNetworkInterface -ResourceGroupName $RG -Name $NICname 
+  $addr = $NIC.ipconfigurations[0].privateipaddress
+  $BackendIPaddresses += $addr
+}
+
+
+# 4. ensure we have a Public IP for the app gateway
+if (-NOT (  Get-AzureRmPublicIpAddress -Name $appGwPIPname -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
+  $appGwPIP=New-AzureRMPublicIpAddress -Name $appGwPIPname -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $appGwDNSname -Sku Basic
+}
+
+$appGwPIP=Get-AzureRmPublicIpAddress -Name $appGwPIPname -ResourceGroupName $RG
+
+
+#################  OK so now we are good to create the Application Gateway ######################
+
+$gwipconfig    = New-AzureRmApplicationGatewayIPConfiguration  -Name $GWipConfName -Subnet $AppGwsubnet
+$feipconfig    = New-AzureRmApplicationGatewayFrontendIPConfig -Name $GWfeConfName -PublicIPAddress $appGwPIP
+$frontendPorts = New-AzureRmApplicationGatewayFrontendPort     -Name $GWfePortName -Port $GwfePort
+
+$backendAddressPool  = New-AzureRmApplicationGatewayBackendAddressPool  -Name $GwbePoolName -BackendIPAddresses $BackendIPaddresses
+$backendHttpSettings = New-AzureRmApplicationGatewayBackendHttpSettings -Name $GwbePoolSettings -Port $GwbePort -Protocol $Protocol -CookieBasedAffinity $cookieBasedAffinity -RequestTimeout $GwbeRequTimeout
+
+$Httplistener = New-AzureRmApplicationGatewayHttpListener       -Name $GwListenerName -Protocol $Protocol -FrontendIPConfiguration $feipconfig -FrontendPort $frontendPorts
+$frontendRule = New-AzureRmApplicationGatewayRequestRoutingRule -Name $GwRoutingRuleName -RuleType $GwRuleType -HttpListener $Httplistener -BackendAddressPool $backendAddressPool -BackendHttpSettings $backendHttpSettings
+
+$SKU = New-AzureRmApplicationGatewaySku -Name $gwSKUname -Tier $gwSKUTier -Capacity $gwSKUCapacity
+
+New-AzureRmApplicationGateway -Name $AppGwName -ResourceGroupName $RG -Location $Sydney `
+                              -GatewayIpConfigurations $gwipconfig  `
+                              -FrontendIpConfigurations $feipconfig -FrontendPorts $frontendPorts `
+                              -BackendAddressPools $backendAddressPool -BackendHttpSettingsCollection $backendHttpSettings `
+                              -HttpListeners $Httplistener -RequestRoutingRules $frontendRule -Sku $SKU
+
 #endregion
 #region Kubernetes
   if (-NOT (Get-Module -Name 'AzureRM.Aks' -ListAvailable)) {
