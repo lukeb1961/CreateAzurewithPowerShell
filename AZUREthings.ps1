@@ -1,5 +1,5 @@
 ﻿#Requires -version 5
-#Requires -Module AzureRM, PKI, PowerShellGet, nx
+#Requires -Module AzureRM.Netcore, PKI, PowerShellGet, nx
 #Requires -RunAsAdministrator
 #run as admin to create self-signed certs for automation RunAsAccount etc. (it needs admin for the local cert store, etc.)
 
@@ -9,8 +9,19 @@
   https://github.com/mariuszdotnet/azure-vmss-templates/blob/master/vm-lnx-lad/azuredeploy.ps1
   service fabric with containers
   https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
-  Containers
-  https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
+#>
+
+<#
+to collapse/expand all the Regions
+if using Visual Studio Code
+    Fold All folds all region in the editor:
+       Ctrl+K Ctrl+0 (zero) on Windows
+    
+    Unfold All unfolds all regions in the editor:
+       Ctrl+K Ctrl+J on Windows
+
+if using PowerShell ISE
+  Ctrl-M   (toggles each way)
 #>
 
 #region SelectSubscription
@@ -39,7 +50,12 @@ $Choice = $Host.UI.PromptForChoice('Azure','Please choose a subscription',$Promp
 $Subscription=$Subscriptions[$choice]
 #endregion
 #region LoginToAzure
-Import-Module -Name AzureRM 
+if ($IsLinux -OR $IsMacOS -OR $IsCoreCLR ) {
+  Import-Module -Name AzureRM.NetCore
+}
+else {
+  Import-Module -Name AzureRM 
+}
 if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
   Connect-AzureRmAccount
 }
@@ -59,27 +75,27 @@ function Test-AdminRights
 	[OutputType([bool])] 
 	Param ([string]$Scope) 
 
+   $isAdminProcess=$false
    if (($PSVersionTable.PSVersion.Major -le 5) -or $IsWindows) {
       $currentUser = [Security.Principal.WindowsPrincipal]([Security.Principal.WindowsIdentity]::GetCurrent())
       $isAdminProcess = $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
    }
-   else {
-      # Must be Linux or OSX, so use the id util. Root has userid of 0.
+   else { # Must be Linux or OSX, so use the id util. Root has userid of 0.
       $isAdminProcess = 0 -eq (id -u)
    }
+   #if ($isAdminProcess -eq $false) { throw 'Administrator rights are required.' }
 
-   if ($isAdminProcess -eq $false)
-   {
-      throw 'Administrator rights are required.'
-   }
-
-   $isAdminProcess
-  }
+   Write-Output -InputObject $isAdminProcess
+}
 #endregion
 #region Variables
 Write-Verbose -Message 'Set variables'
 $RG   = $MyName + '-AZUREthings'
 $RGSF = $MyName + '-ServiceFabricMel'
+
+$TMRG1 = $MyName + 'TrafficMgrRG1'
+$TMRG2 = $MyName + 'TrafficMgrRG2'
+
 
 $AzureVMsize = 'Standard_D1_v2'
 
@@ -92,6 +108,10 @@ $RegistryName = ($MyName + 'Registry')               # The registry name must be
 $SQLdbName         = ($MyName + '-SQLdb01').ToLower()
 $SQLserverName     = ($MyName + '-sqlhostsvr').ToLower()   # globally unique name, must be lowercase
 
+$CosmosDBname      = ($MyName + '-Cosmosdb01').ToLower()
+
+$HDIclustername    = ($MyName + '-HDInsightCluster').ToLower()
+
 $MelAutomation     = $MyName + '-MelAutomation'  
 $appDisplayName    = $MelAutomation + '-AutoAppDisplayName'
 $MelLogAnalyticsWS = ($MyName + '-Mel-log-analytics').ToLower()
@@ -99,6 +119,8 @@ $BackUpVaultSydney = ($MyName + '-SydBackupVault').ToLower()
 
 $KeyVaultMelbourne =  $MyName + '-MelKeyVlt'      #'^[a-zA-Z0-9-]{3,24}$'.
 $KeyVaultMelSF     =  $MyName + '-MelSFKeyVlt'    #'^[a-zA-Z0-9-]{3,24}$'.
+
+$KeyVaultSydney    =  $MyName + '-SydKeyVlt'      #'^[a-zA-Z0-9-]{3,24}$'.
 
 $SydStorageAccount = ($MyName + 'sydstorage').ToLower()  # globally unique name, 1-24 chars numbers and lowercase letters ONLY
 $MelStorageAccount = ($MyName + 'melstorage').ToLower()  # globally unique name, 1-24 chars numbers and lowercase letters ONLY
@@ -193,6 +215,7 @@ $SydneyFreeBSD='SydFreeBSD'
 $SydneyOpenBSD='SydOpenBSD'
 $SydneyWinSvr ='SydWinSvr'
 $SydneyWinVMSS='SydWinVMScaleSet'
+$SydneyLxVMSS ='SydLxVMScaleSet'
 
 $MelbourneUbuntu ='MelUbuntu'
 $MelbourneCentOS ='MelCentOS'
@@ -207,11 +230,13 @@ $password = 'M1cr0softAzure'
 $securepasswd    = ConvertTo-SecureString -String $password -AsPlainText -Force
 $AdminCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList ($user, $securepasswd)
 
-$LOCALTEMPSCRIPTS  = "$ENV:TEMP/SCRIPTS"
-$LOCALTEMPCONFIGS  = "$ENV:TEMP/DSCCONFIGS"
-$LOCALTEMPMODULES  = "$ENV:TEMP/DSCMODULES"
-$LOCALTEMPRUNBOOKS = "$ENV:TEMP/RUNBOOKS"
+$TMPDIR = (New-TemporaryFile).DirectoryName
+$LOCALTEMPSCRIPTS  = "$TMPDIR/SCRIPTS"
+$LOCALTEMPCONFIGS  = "$TMPDIR/DSCCONFIGS"
+$LOCALTEMPMODULES  = "$TMPDIR/DSCMODULES"
+$LOCALTEMPRUNBOOKS = "$TMPDIR/RUNBOOKS"
 
+$SydlxLBname='sydlxlb'
 $SydWinLBname='sydwinlb'
 $features = @()
 #endregion
@@ -226,6 +251,7 @@ $null=Get-ChildItem -Path $LOCALTEMPMODULES | Remove-Item -Force
 # ensure that any Modules required are also to be zipped, ready to be uploaded and then deployed into Automation.
 foreach ($DSCMODULE in $DSCMODULES) {
   if (-NOT (Get-Module -Name $DSCMODULE -ListAvailable)) {
+    Write-Verbose -Message ('Installing module {0}' -f $DSCMODULE)
     Find-Module -Name $DSCMODULE | Install-Module -Force -AllowClobber -Scope CurrentUser
   }
   $moduleFolder=(Get-Module -Name $DSCMODULE -ListAvailable).ModuleBase
@@ -638,7 +664,7 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
 $RunBookScripts = 'StopAzureVMinResponseToVMalert'
 #endregion
 #region CreateRG
-Write-Verbose -Message 'Resource Groups'
+Write-Verbose -Message 'Resource Group'
 if (-NOT (Get-AzureRmResourceGroup -Name $RG -EA SilentlyContinue)) {
   Write-Verbose -Message ("Creating RG '{0}'" -f $RG)
   $null = New-AzureRmResourceGroup -Name $RG -Location $Sydney
@@ -648,11 +674,6 @@ While (-NOT ($AZURETHINGS) ) {
   start-sleep -Seconds 2
 }
 
-if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
-  Write-Verbose -Message ("Creating RG '{0}'" -f $RGSF)
-  $null = New-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
-}
-$ServiceFabricMel = Get-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
 #endregion
 #region RBAC
 # example of granting a user from another company (e.g. a consultant) access to our things as a Contributor
@@ -771,6 +792,10 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
   }
   if (-NOT (   Get-AzureRmPublicIpAddress -Name 'melgwpip' -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
     $MelGWYpip=New-AzureRMPublicIpAddress -Name 'melgwpip' -ResourceGroupName $RG -Location $Melbourne -AllocationMethod Dynamic -DomainNameLabel 'melgateway'
+  }
+
+  if (-NOT (   Get-AzureRmPublicIpAddress -Name 'sydlxLBpip' -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
+    $SydlxLBpip=New-AzureRMPublicIpAddress -Name 'sydlxLBpip' -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $SydlxLBname
   }
 
   if (-NOT (   Get-AzureRmPublicIpAddress -Name 'sydWinLBpip' -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
@@ -902,7 +927,41 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
   }
 #endregion
 #region LoadBalancers
-  Write-Verbose -Message 'Creating External load-balancers (Syd)'
+#region LinuxLB
+  Write-Verbose -Message 'Creating LINUX External load-balancer (Syd)'
+  $SydlxLBpip    = Get-AzureRmPublicIpAddress -name 'SydlxLBpip' -ResourceGroupName $RG
+  $SydlxLBconfig = New-AzureRmLoadBalancerFrontendIpConfig -Name 'SydlxLBConfig' -PublicIpAddressId $SydlxLBpip.Id
+  $SydlxBEpool   = New-AzureRmLoadBalancerBackendAddressPoolConfig -Name 'SydlxBEpool' 
+if (-NOT (Get-AzureRmLoadBalancer -name $SydlxLBname -ResourceGroupName $RG -EA SilentlyContinue)) {
+      $SydlxLB = New-AzureRmLoadBalancer -Name $SydlxLBname  -ResourceGroupName $RG -Location $Sydney `
+                                            -FrontendIpConfiguration $SydlxLBconfig `
+                                            -BackendAddressPool $SydlxBEpool `
+                                            -Tag @{Name='MyLoadBalancerTagHere';Value='Sydney Linux LB'}
+
+      # Create a load balancer health probe on port 80
+      $probe=Add-AzureRmLoadBalancerProbeConfig -Name 'SydlxLBHealthProbe' `
+                                                -LoadBalancer $SydlxLB `
+                                                -Protocol tcp `
+                                                -Port 80 `
+                                                -IntervalInSeconds 15 `
+                                                -ProbeCount 2
+
+      # Create a load balancer rule to distribute traffic on port 80
+      $cfg=Add-AzureRmLoadBalancerRuleConfig -Name 'SydLXLBRule' -LoadBalancer $SydlxLB `
+                                             -FrontendIpConfiguration $SydlxLB.FrontendIpConfigurations[0] `
+                                             -BackendAddressPool $SydlxLB.BackendAddressPools[0] `
+                                             -Protocol Tcp `
+                                             -FrontendPort 80 `
+                                             -BackendPort 80
+
+      # Update the load balancer configuration
+      $update=Set-AzureRmLoadBalancer -LoadBalancer $SydlxLB
+  }
+
+  $SydlxLB=Get-AzureRmLoadBalancer -name $SydlxLBname -ResourceGroupName $RG
+#endregion
+#region WinLB
+  Write-Verbose -Message 'Creating WINDOWS External load-balancer (Syd)'
   $SydwinLBpip    = Get-AzureRmPublicIpAddress -name 'SydWinLBpip' -ResourceGroupName $RG
   $SydWinLBconfig = New-AzureRmLoadBalancerFrontendIpConfig -Name 'SydWinLBConfig' -PublicIpAddressId $SydwinLBpip.Id
   $SydWinBEpool   = New-AzureRmLoadBalancerBackendAddressPoolConfig -Name 'SydWinBEpool' 
@@ -933,7 +992,7 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
   }
 
   $SydWinLB=Get-AzureRmLoadBalancer -name $SydWinLBname -ResourceGroupName $RG
-
+#endregion
 #endregion
 #region AVsets
 # define the availability sets our VMs will be leveraging
@@ -965,6 +1024,7 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
   $MelWINavSet = Get-AzureRmAvailabilitySet -ResourceGroupName $RG -Name Mel-WIN-AVset
 #endregion
 #region KeyVault
+#region Melbourne
  $tags = @{'function' = 'AzureThings'}
 
  $MKVP=Register-AzureRmResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
@@ -979,32 +1039,50 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
  }
  $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
 
- Write-Verbose -Message 'Creating (Service Fabric) Key Vault (Mel)'
- #Service Fabric needs its own RG and Vault.
- if (-NOT ( Get-AzureRmKeyVault -ResourceGroupName $RGSF -VaultName $KeyVaultMelSF -EA SilentlyContinue)) {
-  $MelKeyVaultSF=New-AzureRmKeyVault -ResourceGroupName $RGSF -Location $Melbourne `
-                                   -VaultName $KeyVaultMelSF `
-                                   -EnabledForTemplateDeployment `
-                                   -EnabledForDeployment `
-                                   -EnabledForDiskEncryption `
-                                   -Tag $tags
- }
- $MelKeyVaultSF=Get-AzureRmKeyVault -VaultName $KeyVaultMelSF -ResourceGroupName $RGSF
  
 # By default, the Web App RP doesn’t have access to a customers KeyVault. 
 # In order to use a KV for certificate deployment, you need to authorize the RP.
 # See https://blogs.msdn.microsoft.com/appserviceteam/2016/05/24/deploying-azure-web-app-certificate-through-key-vault/
 
 Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelbourne -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
-Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelSF     -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
 
+ Write-Verbose -Message 'Creating Key Vault Secrets (Mel)'
 $secretvalue = ConvertTo-SecureString -String $user -AsPlainText -Force
 Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name 'AdminUsername' -SecretValue $secretvalue
 
 $secretvalue = ConvertTo-SecureString -String $password -AsPlainText -Force
 Set-AzureKeyVaultSecret -VaultName $KeyVaultMelbourne -Name 'Adminpassword' -SecretValue $secretvalue
+#endregion
+#region Sydney
+ $tags = @{'function' = 'AzureThings'}
 
+ $MKVP=Register-AzureRmResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
+ Write-Verbose -Message 'Creating (standard) Key Vault (Sydney)'
+ if (-NOT ( Get-AzureRmKeyVault -ResourceGroupName $RG -VaultName $KeyVaultSydney -EA SilentlyContinue)) {
+  $SydKeyVault=New-AzureRmKeyVault -ResourceGroupName $RG -Location $Sydney `
+                                   -VaultName $KeyVaultSydney `
+                                   -EnabledForTemplateDeployment `
+                                   -EnabledForDeployment `
+                                   -EnabledForDiskEncryption `
+                                   -Tag $tags
+ }
+ $SydKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultSydney -ResourceGroupName $RG
 
+ 
+# By default, the Web App RP doesn’t have access to a customers KeyVault. 
+# In order to use a KV for certificate deployment, you need to authorize the RP.
+# See https://blogs.msdn.microsoft.com/appserviceteam/2016/05/24/deploying-azure-web-app-certificate-through-key-vault/
+
+Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultSydney -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
+
+ Write-Verbose -Message 'Creating Key Vault Secrets (Sydney)'
+$secretvalue = ConvertTo-SecureString -String $user -AsPlainText -Force
+Set-AzureKeyVaultSecret -VaultName $KeyVaultSydney -Name 'AdminUsername' -SecretValue $secretvalue
+
+$secretvalue = ConvertTo-SecureString -String $password -AsPlainText -Force
+Set-AzureKeyVaultSecret -VaultName $KeyVaultSydney -Name 'Adminpassword' -SecretValue $secretvalue
+
+#endregion
 #region Create VSTS Auth header
 # using existing personal Access token:
 # https://docs.microsoft.com/en-us/vsts/accounts/use-personal-access-tokens-to-authenticate
@@ -1092,7 +1170,9 @@ $vstsBasicAuthHeader=$headers
   $ExpiryTime = (Get-Date).ToUniversalTime().AddYears(10) 
 
   # Sets up a Stored Access Policy and a Shared Access Signature for a container  
-  $policy = New-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -StartTime $StartTime -ExpiryTime $ExpiryTime  -Permission rwld
+  if (-NOT ($policy = Get-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -EA SilentlyContinue)) {
+   $policy = New-AzureStorageContainerStoredAccessPolicy -Container $scriptContainer -Policy $ContainerPolicyName -Context $MelContext -StartTime $StartTime -ExpiryTime $ExpiryTime  -Permission rwld
+  }
 
   # Gets the Shared Access Signature for the policy  
   $sas = New-AzureStorageContainerSASToken -name $scriptContainer -Policy $ContainerPolicyName -Context  $MelContext
@@ -1310,7 +1390,7 @@ $vstsBasicAuthHeader=$headers
   `
  #endregion
  #region PublishRunBooks
-
+ Write-Verbose -Message 'Importing runbooks'
  $RBooksOnDisk=Get-ChildItem -Path $LOCALTEMPRUNBOOKS
 
  foreach ($RB in $RBooksOnDisk) {
@@ -1336,6 +1416,8 @@ $vstsBasicAuthHeader=$headers
   }
  #endregion
  #region RunAsAccount
+  # scripted creation does NOT automatically create the RunAsAccounts whereas the Portal does. (a tickbox)
+  # so the below will do that... 
   Add-Type -AssemblyName System.Security
     
   function New-RunAsAccount {
@@ -1351,7 +1433,7 @@ $vstsBasicAuthHeader=$headers
        )
 
     Add-Type -AssemblyName Microsoft.Azure.Commands.Common.Graph.RBAC
-    private:function Create-SelfSignedCertificate {
+    function private:Create-SelfSignedCertificate {
  
       param([Parameter(Mandatory = $true)] [string] $certificateName, 
             [Parameter(Mandatory = $true)] [string] $selfSignedCertPlainPassword,
@@ -1373,7 +1455,7 @@ $vstsBasicAuthHeader=$headers
         Export-Certificate    -Cert ($CertStoreLocation + '\' + $Cert.Thumbprint) -FilePath $certPathCer -Type CERT | Write-Verbose
     }
 
-    private:function Create-ServicePrincipal {  
+    function private:Create-ServicePrincipal {  
 
       param ([Parameter(Mandatory = $true)] [Security.Cryptography.X509Certificates.X509Certificate2] $PfxCert, 
              [Parameter(Mandatory = $true)] [string] $applicationDisplayName)
@@ -1393,25 +1475,31 @@ $vstsBasicAuthHeader=$headers
 
         # Use key credentials and create an Azure AD application
         $Application = New-AzureRmADApplication -DisplayName $ApplicationDisplayName -HomePage ('http://' + $applicationDisplayName) -IdentifierUris ('http://' + $KeyId) -KeyCredentials $KeyCredential
-        $ServicePrincipal = New-AzureRMADServicePrincipal -ApplicationId $Application.ApplicationId 
+        $ServicePrincipal = New-AzureRMADServicePrincipal -ApplicationId $Application.ApplicationId -Role 'Contributor' 
         $GetServicePrincipal = Get-AzureRmADServicePrincipal -ObjectId $ServicePrincipal.Id
 
         # Sleep here for a few seconds to allow the service principal application to become active (ordinarily takes a few seconds)
         Start-Sleep -Seconds 15
         $NewRole = New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue
         $Retries = 0;
-        While ($NewRole -eq $null -and $Retries -le 6) {
+        While ( (-NOT ($NewRole)) -and $Retries -le 6) {
             Start-Sleep -Seconds 10
-            New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId | Write-Verbose -ErrorAction SilentlyContinue
-            $NewRole = Get-AzureRMRoleAssignment -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue
+            if (-NOT ( $NewRole = Get-AzureRMRoleAssignment -ServicePrincipalName $Application.ApplicationId -ErrorAction SilentlyContinue)) {
+             $NewRole = New-AzureRMRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $Application.ApplicationId | Write-Verbose -ErrorAction SilentlyContinue
+            }
             $Retries++;
         }
         return $Application.ApplicationId.ToString();
     }
 
-    private:function Create-AutomationCertificateAsset {
+    function private:Create-AutomationCertificateAsset {
         
-      param ([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $certificateAssetName, [Parameter(Mandatory = $true)] [string] $certPath, [Parameter(Mandatory = $true)] [string] $certPlainPassword, [Parameter(Mandatory = $true)] [bool] $Exportable)
+      param ([Parameter(Mandatory = $true)] [string] $resourceGroup, 
+             [Parameter(Mandatory = $true)] [string] $automationAccountName, 
+             [Parameter(Mandatory = $true)] [string] $certificateAssetName, 
+             [Parameter(Mandatory = $true)] [string] $certPath, 
+             [Parameter(Mandatory = $true)] [string] $certPlainPassword, 
+             [Parameter(Mandatory = $true)] [bool]   $Exportable)
 
         Write-Verbose -Message 'Create Automation Certificate Asset'
         $CertPassword = ConvertTo-SecureString -String $certPlainPassword -AsPlainText -Force   
@@ -1419,12 +1507,17 @@ $vstsBasicAuthHeader=$headers
         New-AzureRmAutomationCertificate    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $certificateAssetName -Path $certPath -Password $CertPassword -Exportable:$Exportable  | write-verbose
     }
 
-    private:function Create-AutomationConnectionAsset {
+    function private:Create-AutomationConnectionAsset {
         
-      param([Parameter(Mandatory = $true)] [string] $resourceGroup, [Parameter(Mandatory = $true)] [string] $automationAccountName, [Parameter(Mandatory = $true)] [string] $connectionAssetName, [Parameter(Mandatory = $true)] [string] $connectionTypeName, [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
+      param([Parameter(Mandatory = $true)] [string] $resourceGroup, 
+            [Parameter(Mandatory = $true)] [string] $automationAccountName, 
+            [Parameter(Mandatory = $true)] [string] $connectionAssetName, 
+            [Parameter(Mandatory = $true)] [string] $connectionTypeName, 
+            [Parameter(Mandatory = $true)] [hashtable] $connectionFieldValues)
+
         Write-Verbose -Message 'Create Automation Connection Asset'
         Remove-AzureRmAutomationConnection -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -Force -ErrorAction SilentlyContinue
-        New-AzureRmAutomationConnection    -ResourceGroupName $ResourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -ConnectionTypeName $connectionTypeName -ConnectionFieldValues $connectionFieldValues
+        New-AzureRmAutomationConnection    -ResourceGroupName $resourceGroup -AutomationAccountName $automationAccountName -Name $connectionAssetName -ConnectionTypeName $connectionTypeName -ConnectionFieldValues $connectionFieldValues
     }
 
 
@@ -1453,14 +1546,15 @@ $vstsBasicAuthHeader=$headers
     $SubscriptionInfo = Get-AzureRmSubscription -SubscriptionId $SubscriptionId
     $TenantID = $SubscriptionInfo.TenantId 
     $Thumbprint = $PfxCert.Thumbprint
-    $ConnectionFieldValues = @{'ApplicationId' = $ApplicationId; 'TenantId' = $TenantID.TenantId; 'CertificateThumbprint' = $Thumbprint; 'SubscriptionId' = $SubscriptionId}
+    $ConnectionFieldValues = @{'ApplicationId' = $ApplicationId; 'TenantId' = $TenantID; 'CertificateThumbprint' = $Thumbprint; 'SubscriptionId' = $SubscriptionId}
 
     # Create an Automation connection asset named AzureRunAsConnection in the Automation account. This connection uses the service principal.
     Create-AutomationConnectionAsset -resourceGroup $ResourceGroup -automationAccountName $AutomationAccountName -connectionAssetName $ConnectionAssetName -connectionTypeName $ConnectionTypeName -connectionFieldValues $ConnectionFieldValues
 
   }
   if (Test-AdminRights) {
- 
+    Write-Verbose -Message 'Creating Automation RunAsAccount'
+
     New-RunAsAccount -ResourceGroup $RG `
                      -ApplicationDisplayName $appDisplayName `
                      -AutomationAccountName $MelAutomation `
@@ -1480,6 +1574,7 @@ $vstsBasicAuthHeader=$headers
   ## see https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
   ## see https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
 
+ Write-Verbose -mess 'Create Azure Function App engine'
  $functionAppResource = Get-AzureRmResource | Where-Object {$_.ResourceName -eq $functionAppName -And $_.ResourceType -eq 'Microsoft.Web/Sites'}
  if ($null -eq $functionAppResource) {
    $functionAppResource=New-AzureRmResource -ResourceType 'Microsoft.Web/Sites' -ResourceName $functionAppName -Kind 'functionapp' -Location $Sydney -ResourceGroupName $RG -Properties @{} -Force
@@ -1508,7 +1603,7 @@ Out-File -Encoding Ascii -FilePath $res -inputObject "Hello $name"
 #now the definition of the function.json, which is stored alongside run.ps1
 #NOTE the $false will become False in the json, but it seems to expect false (lowercase) 
 #     if we put 'false' with quotes, again doesn't see it as false...
-#     It's a bug. But who is at fault?
+#     It's looking like a bug. But who is at fault?
 
 $props = @{
   config = @{
@@ -1530,6 +1625,7 @@ $props = @{
   files = @{ 'run.ps1' = $SB }
 }
 
+ Write-Verbose -message ('Create Azure Function: "{0}"' -f  $functionName )
 
 $ResourceName='{0}/{1}' -f $functionAppResource.Name, $functionName # check for existing item
 $Params = @{
@@ -1537,9 +1633,13 @@ $Params = @{
     ResourceType      = 'Microsoft.Web/sites/functions'
     ResourceName      = $ResourceName
     ApiVersion        = '2015-08-01'
+    ErrorAction       = 'SilentlyContinue'
 }
 
-if (-NOT (Get-AzureRmResource @Params -EA SilentlyContinue) ) { # check if it already exists
+try {
+ $null=Get-AzureRmResource @Params  # check if it already exists
+}
+catch {
   #this new function  will be placed into the correct location
   $newResourceId = '{0}/functions/{1}' -f $functionAppResource.ResourceId, $functionName 
   New-AzureRmResource -ResourceID $newResourceId -Properties $props -Force -ApiVersion 2016-08-01
@@ -1697,12 +1797,47 @@ $OIWSurl=$OIWS.PortalUrl
 
 #endregion
 #region VMSSconfigs
-  Write-Verbose -Message 'Creating VMSS config (Sydney)'
+#region LXvmss
+  Write-Verbose -Message 'Creating LINUX VMSS config (Sydney)'
+  $SydlxVMSScapacity=2
+# Create a VMSS config object
+$SydlxVMSSConfig = New-AzureRmVmssConfig -Location $Sydney `
+                                       -SkuCapacity $SydlxVMSScapacity -SkuName Standard_DS2 `
+                                       -UpgradePolicyMode Automatic `
+                                       -Tag @{Name='AnotherTagName';Value=$MyName}
+# Reference a virtual machine image from the gallery
+$SydlxVMSSConfig=Set-AzureRmVmssStorageProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
+                             -ImageReferencePublisher OpenLogic `
+                             -ImageReferenceOffer CentOS `
+                             -ImageReferenceSku 7.4 `
+                             -ImageReferenceVersion latest `
+                             -OsDiskCreateOption 'FromImage' -OsDiskCaching 'None'
 
+# Set up information for authenticating with the virtual machine
+$SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConfig `
+                                        -AdminUsername $user -AdminPassword $password `
+                                        -ComputerNamePrefix SydLX
+
+$SydVnet      = Get-AzureRmVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
+$SydLXsubnet = Get-AzureRmVirtualNetworkSubnetConfig -Name $LXsubnetName -VirtualNetwork $SydVnet
+$ipConfig = New-AzureRmVmssIpConfig -Name 'VMSSIPConfig' `
+                                    -LoadBalancerBackendAddressPoolsId $SydlxLB.BackendAddressPools[0].Id `
+                                    -SubnetId $SydLXsubnet.Id
+
+# Attach the virtual network to the config object
+$SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScaleSet $SydlxVMSSConfig `
+                                                            -Name 'network-config'  `
+                                                            -Primary $true `
+                                                            -IPConfiguration $ipConfig
+#endregion
+#region WINvmss
+  Write-Verbose -Message 'Creating Windows VMSS config (Sydney)'
+
+$SydVMSScapacity=2
 
 # Create a VMSS config object
 $SydVMSSConfig = New-AzureRmVmssConfig -Location $Sydney `
-                                       -SkuCapacity 2 -SkuName Standard_DS2 `
+                                       -SkuCapacity $SydVMSScapacity -SkuName Standard_DS2 `
                                        -UpgradePolicyMode Automatic `
                                        -Tag @{Name='AnotherTagName';Value=$MyName}
 <#
@@ -1745,6 +1880,7 @@ $SydVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScale
                                                             -Primary $true `
                                                             -IPConfiguration $ipConfig
 
+#endregion
 #endregion
 #region create VM's
 # now spin up the actual VMs
@@ -2115,7 +2251,23 @@ else {
 #endregion
 #endregion
 #region create VMSS
-  Write-Verbose -Message 'Creating VMSS (Sydney)'
+#region Linux VMSS
+  Write-Verbose -Message 'Creating Linux VMSS (Sydney)'
+
+  If (-NOT (Get-AzureRmVmss -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS -EA SilentlyContinue)) {
+    # Create the scale set with the config object (this step might take a few minutes)
+    New-AzureRmVmss -ResourceGroupName $RG -Name $SydneylxVMSS -VirtualMachineScaleSet $SydlxVMSSConfig -Verbose
+  }
+
+  $scaleset = Get-AzureRmVmss -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS
+  # Loop through the instances in the scale set
+  for ($i=1; $i -le ($scaleset.Sku.Capacity - 1); $i++) {
+    Get-AzureRmVmssVM -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS -InstanceId $i
+  }
+
+#endregion
+#region Windows VMSS
+  Write-Verbose -Message 'Creating Windows VMSS (Sydney)'
 
   If (-NOT (Get-AzureRmVmss -ResourceGroupName $RG -VMScaleSetName $SydneyWinVMSS -EA SilentlyContinue)) {
     # Create the scale set with the config object (this step might take a few minutes)
@@ -2128,7 +2280,9 @@ else {
     Get-AzureRmVmssVM -ResourceGroupName $RG -VMScaleSetName $SydneyWinVMSS -InstanceId $i
   }
 #endregion
+#endregion
 #region enableVMSSautoscale
+  #if the VMSS in Sydney is there, add some autoscale coolness based on CPU
 
   If (Get-AzureRmVmss -ResourceGroupName $RG -VMScaleSetName $SydneyWinVMSS -EA SilentlyContinue) {
     Write-Verbose -Message 'Creating VMSS autoscale rules (Sydney)'
@@ -2150,18 +2304,79 @@ else {
                                       -MetricStatistic Average -Threshold 30 -TimeGrain 00:01:00 -TimeWindow 00:05:00 `
                                       -ScaleActionCooldown 00:05:00 -ScaleActionDirection Decrease -ScaleActionValue 1
 
-    $profile1 = New-AzureRmAutoscaleProfile -DefaultCapacity 3 -MaximumCapacity 10 -MinimumCapacity 2 `
-                                            -Rules $rule1,$rule2 -Name 'autoprofile1'
+    $profile1 = New-AzureRmAutoscaleProfile -DefaultCapacity 0 -MaximumCapacity 6 -MinimumCapacity 0 `
+                                            -Rule $rule1,$rule2 -Name 'autoprofile1'
 
     Add-AzureRmAutoscaleSetting -Name 'autosetting1' -Location $Sydney -ResourceGroup $RG `
-                                -TargetResourceId $MetricResourceId -AutoscaleProfiles $profile1 
+                                -TargetResourceId $MetricResourceId -AutoscaleProfile $profile1 
   }
   else {
     $ErrorActionPreference='SilentlyContinue'
   }
 
 #endregion
+#region trafficManager
+
+# The values of the variables below must be unique (replace with your own names).
+$webApp1  = "mywebapp$(Get-Random)"
+$webApp2  = "mywebapp$(Get-Random)"
+$webAppL1 = "MyWebAppL1"
+$webAppL2 = "MyWebAppL2"
+
+New-AzureRmResourceGroup -Name $TMRG1 -Location $Sydney
+New-AzureRmResourceGroup -Name $TMRG2 -Location $Melbourne
+
+# Create a website deployed from GitHub in both regions (replace with your own GitHub URL).
+$gitrepo="https://github.com/Azure-Samples/app-service-web-dotnet-get-started.git"
+
+# Create a hosting plan and website and deploy it in location one (requires Standard 1 minimum SKU).
+$appServicePlan = New-AzureRmAppServicePlan -Name $webappl1 -ResourceGroupName $TMRG1 -Location $Sydney -Tier Standard 
+$web1 = New-AzureRmWebApp -ResourceGroupName $TMRG1 -Name $webApp1 -Location $Sydney -AppServicePlan $webappl1
+
+# Configure GitHub deployment from your GitHub repo and deploy once.
+$PropertiesObject = @{
+    repoUrl = "$gitrepo";
+    branch = "master";
+    isManualIntegration = "true";
+}
+
+Set-AzureRmResource -PropertyObject $PropertiesObject -ResourceGroupName $TMRG1 `
+                    -ResourceType Microsoft.Web/sites/sourcecontrols `
+                    -ResourceName $webapp1/web -ApiVersion 2015-08-01 -Force
+
+# Create a hosting plan and website and deploy it in location two (requires Standard 1 minimum SKU).
+$appServicePlan = New-AzureRmAppServicePlan -Name $webappl2 -ResourceGroupName $TMRG2 -Location $Melbourne -Tier Standard 
+$web2 = New-AzureRmWebApp -ResourceGroupName $TMRG2 -Name $webApp2 -Location $Melbourne -AppServicePlan $webappl2
+
+$PropertiesObject = @{
+    repoUrl = "$gitrepo";
+    branch = "master";
+    isManualIntegration = "true";
+}
+
+Set-AzureRmResource -PropertyObject $PropertiesObject -ResourceGroupName $TMRG2 `
+                    -ResourceType Microsoft.Web/sites/sourcecontrols `
+                    -ResourceName $webapp2/web -ApiVersion 2015-08-01 -Force
+
+# Create a Traffic Manager profile.
+$tm = New-AzureRmTrafficManagerProfile -Name 'MyTrafficManagerProfile' -ResourceGroupName $TMRG1 `
+                                       -TrafficRoutingMethod Priority -RelativeDnsName $web1.Name -Ttl 60 `
+                                       -MonitorProtocol HTTP -MonitorPort 80 -MonitorPath /
+
+
+# Create an endpoint for the location one website deployment and set it as the priority target.
+$endpoint = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint1' -ProfileName $tm.Name `
+                                              -ResourceGroupName $TMRG1 -Type AzureEndpoints -Priority 1 `
+                                              -TargetResourceId $web1.Id -EndpointStatus Enabled
+
+# Create an endpoint for the location two website deployment and set it as the secondary target.
+$endpoint2 = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint2' -ProfileName $tm.Name `
+                                               -ResourceGroupName $TMRG1 -Type AzureEndpoints -Priority 2 `
+                                               -TargetResourceId $web2.Id -EndpointStatus Enabled
+
+#endregion
 #region Databases
+#region SQL
     Write-Verbose -Message 'Creating SQL server'
     if (-NOT (Get-AzureRmSqlServer -ResourceGroupName $RG -ServerName $SQLserverName -ErrorAction SilentlyContinue) ) {
       New-AzureRmSqlServer -ResourceGroupName $RG -ServerName $SQLserverName -Location $Sydney -SqlAdministratorCredentials $AdminCredential
@@ -2171,6 +2386,206 @@ else {
       $tags=@{key0='value0';key1='value1';key2='value2'}
       New-AzureRmSqlDatabase -ResourceGroupName $RG -DatabaseName $SQLdbName -ServerName $SQLserverName  -Edition Standard -Tags $tags
     }
+#endregion
+#region CosmosDB
+#region New-AzureRMCosmosDBAPIaccount
+function New-AzureRMCosmosDBAPIaccount {
+  <#
+      .SYNOPSIS
+      Creates an Azure Cosmos DB database account.
+
+      .DESCRIPTION
+      Add a more complete description of what the function does.
+
+      .PARAMETER ResourceGroupName
+      Name of an Azure resource group.
+
+      .PARAMETER accountName
+      Cosmos DB database account name
+
+      .PARAMETER locationNames
+      Describe parameter -locationNames.
+
+      .PARAMETER iprangefilter
+      Cosmos DB Firewall Support: This value specifies the set of IP addresses or IP address ranges in CIDR form 
+      to be included as the allowed list of client IPs for a given database account. 
+      IP addresses/ranges must be comma separated and must not contain any spaces.
+
+      .PARAMETER defaultConsistencyLevel
+      The default consistency level and configuration settings of the Cosmos DB account.
+      Values can be 'Strong','BoundedStaleness','Session','ConsistentPrefix','Eventual'
+
+      .PARAMETER MongoDB
+      Describe parameter -MongoDB.
+
+      .PARAMETER Gremlin
+      Describe parameter -Gremlin.
+
+      .PARAMETER Cassandra
+      Describe parameter -Cassandra.
+
+      .PARAMETER Table
+      Describe parameter -Table.
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'
+      Creates a CosmosDB named 'myCosmosDB' using the SQL api, with 'session' default Consistency Level 
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -locationNames Value -iprangefilter Value -defaultConsistencyLevel Value
+      Describe what this call does
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'  -defaultConsistencyLevel 'BoundedStaleness' -maxIntervalInSeconds 5 -maxStalenessPrefix 100
+      Describe what this call does
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -MongoDB
+      Describe what this call does
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Gremlin
+      Describe what this call does
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Cassandra
+      Describe what this call does
+
+      .EXAMPLE
+      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Table
+      Describe what this call does
+
+      .NOTES
+      Place additional notes here.
+
+      .LINK
+      https://docs.microsoft.com/en-us/rest/api/cosmos-db-resource-provider/databaseaccounts/createorupdate
+
+      .INPUTS
+      List of input types that are accepted by this function.
+
+      .OUTPUTS
+      An Azure Cosmos DB database account.
+  #>
+
+
+  [CmdletBinding(DefaultParameterSetName='default')]
+  PARAM (
+        [parameter(Mandatory=$true,HelpMessage='Name of an Azure resource group.')]
+        [string]   $ResourceGroupName,
+        [parameter(Mandatory=$true,HelpMessage='Cosmos DB database account name')]
+        [string]   $accountName, 
+        [string[]] $locationNames='AustraliaEast',
+        [ValidatePattern('^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$')]
+        [string] $iprangefilter,
+        [ValidateSet('Strong','BoundedStaleness','Session','ConsistentPrefix','Eventual')]
+        [string]$defaultConsistencyLevel='Session',
+        [Parameter(ParameterSetName='Mongo')]   [switch] $MongoDB,
+        [Parameter(ParameterSetName='Gremlin')] [switch] $Gremlin,
+        [Parameter(ParameterSetName='Casandra')][switch] $Cassandra,
+        [Parameter(ParameterSetName='Table')]   [switch] $Table
+      )
+
+
+  DynamicParam {
+
+     if ($defaultConsistencyLevel -eq 'BoundedStaleness') # then inject additional parameters -maxIntervalInSeconds and -maxStalenessPrefix
+     {
+        $attributes = new-object System.Management.Automation.ParameterAttribute
+        $attributes.Mandatory = $true
+        $attributes.HelpMessage = "The maxIntervalInSeconds and maxStalenessPrefix parameters are only available if 'BoundedStaleness' is specified"
+
+        $attributeCollection = New-Object -TypeName System.Collections.ObjectModel.Collection[System.Attribute]
+        $attributeCollection.Add($attributes)
+
+        $maxIntervalInSeconds = New-Object -TypeName System.Management.Automation.RuntimeDefinedParameter('maxIntervalInSeconds', [int], $attributeCollection)
+        $maxStalenessPrefix   = New-Object -TypeName System.Management.Automation.RuntimeDefinedParameter('maxStalenessPrefix',   [int], $attributeCollection)    
+        
+        $paramDictionary = new-object -TypeName System.Management.Automation.RuntimeDefinedParameterDictionary
+        $paramDictionary.Add('maxIntervalInSeconds', $maxIntervalInSeconds)
+        $paramDictionary.Add('maxStalenessPrefix',   $maxStalenessPrefix)
+
+        return $paramDictionary
+     }
+  }
+
+  Process {
+  
+    $locations=@()
+    $priority=0
+    foreach ($LocationName in $locationNames) {
+      # Write and read locations and priorities for the database
+      $locations += @{'locationName'=$LocationName; 'failoverPriority'=$priority}
+      $priority++
+    }
+
+    # Consistency policy
+    # https://docs.microsoft.com/en-us/rest/api/cosmos-db-resource-provider/DatabaseAccounts/CreateOrUpdate#defaultconsistencylevel
+    $consistencyPolicy = @{'defaultConsistencyLevel'=$defaultConsistencyLevel}
+    if ($defaultConsistencyLevel -eq 'BoundedStaleness') {
+        $maxIntervalInSeconds=$psboundparameters.maxIntervalInSeconds
+        $maxStalenessPrefix  =$psboundparameters.maxStalenessPrefix 
+
+        if ($maxIntervalInSeconds -lt 5)     {$maxIntervalInSeconds = 5}    # default to 5
+        if ($maxIntervalInSeconds -gt 86400) {$maxIntervalInSeconds = 86400}
+
+        if ($maxStalenessPrefix -lt 1)          {$maxStalenessPrefix = 100} # default to 100
+        if ($maxStalenessPrefix -gt 2147483647) {$maxStalenessPrefix = 2147483647}
+
+        $consistencyPolicy.'maxIntervalInSeconds'= $maxIntervalInSeconds   # 5 - 86400
+        $consistencyPolicy.'maxStalenessPrefix'  = $maxStalenessPrefix     # 1 – 2,147,483,647
+    }
+
+    # ipRangeFilter = Cosmos DB Firewall Support: This value specifies the set of IP addresses or IP address ranges in CIDR form 
+    # to be included as the allowed list of client IPs for a given database account. 
+    # IP addresses/ranges must be comma separated and must not contain any spaces.
+
+    # DB properties
+    $DBProperties = @{'databaseAccountOfferType'='Standard';    
+                      'locations'=$locations; 
+                      'consistencyPolicy'=$consistencyPolicy; 
+                      'ipRangeFilter'=$iprangefilter
+                     }
+
+    # https://docs.microsoft.com/en-us/rest/api/cosmos-db-resource-provider/DatabaseAccounts/CreateOrUpdate#capability
+
+    if ($Gremlin) {    # Create a Gremlin API Cosmos DB account (GRAPH API)
+      $Capability= 'EnableGremlin'
+      $capabilities = @(@{'name'=$Capability})
+      $DBProperties.capabilities=$capabilities
+    }
+    if ($Cassandra) {  # Create an Apache Cassandra API Cosmos DB account
+      $Capability= 'EnableCassandra'
+      $capabilities = @(@{'name'=$Capability})
+      $DBProperties.capabilities=$capabilities
+    }
+    if ($Table) {    # Create a Table API Cosmos DB account
+      $Capability= 'EnableTable'
+      $capabilities = @(@{'name'=$Capability})
+      $DBProperties.capabilities=$capabilities
+    }
+
+    $resourceGroupLocation = (Get-AzureRmResourceGroup -ResourceGroupName $ResourceGroupName -EA SilentlyContinue).Location
+
+    $exists=Get-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
+                                -ResourceGroupName $resourceGroupName -Name $accountName -EA SilentlyContinue
+
+    if ($MongoDB) {
+      New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
+                          -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties `
+                          -Kind 'MongoDB'
+    }
+    else {
+      New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
+                        -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties
+    }
+
+  }
+
+}
+#endregion
+New-AzureRMCosmosDBAPIaccount -ResourceGroupName $RG -accountName $CosmosDBname -locationNames $Sydney -defaultConsistencyLevel Eventual
+#endregion
 #endregion
 #region VPNgateways
     Write-Verbose -Message 'Creating VPN between Sydney and Melbourne Vnets.'
@@ -2233,13 +2648,301 @@ else {
 
 
 #endregion
-#region ServiceFabric
+#region APImanagement
+Write-Verbose -Message 'creating API Management. (Sydney)'  # WARNING: this takes 30 minutes..
+if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
+New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization 'myOrganization' -AdminEmail $MyEmail -Sku 'Developer'
+}
+#endregion
+#region DockerContainers
+  function Test-IsGitInstalled {
+  	[CmdletBinding()] 
+	[OutputType([bool])] 
+	Param () 
+
+    $IsGitInstalled=$False
+    $GitExe='C:\Program Files\Git\cmd\git.exe'
+
+    if (Test-Path -path $GitExe) {$IsGitInstalled=$True}
+
+    Write-Output -InputObject $IsGitInstalled
+  }
+
+  function Test-IsDockerInstalled {
+    [CmdletBinding()] 
+	[OutputType([bool])] 
+	Param () 
+
+    $IsDockerInstalled=$false
+    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+
+
+    if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
+
+    Write-Output -InputObject $IsDockerInstalled
+  }
+
+  function Test-IsDockerWindowsMode {
+    [CmdletBinding()] 
+	[OutputType([bool])] 
+	Param () 
+
+    $IsDockerWindowsMode=$false
+    if (Test-IsDockerInstalled) {
+      $DockerVersion =  (Docker version)
+
+      $DockerVersion | Foreach-Object {
+         if ( $_ -Match 'OS/Arch:\s+(?<OS>\w+)/amd64' ) {
+          if ('windows' -eq $matches.OS) {$IsDockerWindowsMode=$true}
+         }
+      }
+    }
+    Write-Output -InputObject $IsDockerWindowsMode
+  }
+
+
+#https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
+#region DockerContainerRegistry
+ Write-Verbose -Message 'Creating Docker Registry'
+ if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EA SilentlyContinue) ) {
+  if (Test-AzureRmContainerRegistryNameAvailability -Name $RegistryName) {
+    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku 'Basic' #-StorageAccountName $SydStorageAccount
+  }
+  else {
+    Write-Verbose  -Message ( 'Registry name {0} is already in use.' -f $RegistryName )
+  }
+ }
+#endregion
+ 
+ $Registry=Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -ErrorAction SilentlyContinue
+
+ if ($registry) {
+#region BuildDockerImage
+   Write-Verbose -Message 'Building/uploading Docker container "aci-helloworld"'
+   # we will need creds when we use Docker to upload container images to our repo in this registry
+   $creds = Get-AzureRmContainerRegistryCredential -Registry $Registry 
+
+   # https://github.com/git-for-windows/git/releases/download/v2.17.0.windows.1/Git-2.17.0-64-bit.exe
+   # https://download.docker.com/win/stable/Docker%20for%20Windows%20Installer.exe
+
+   #check if Docker is installed locally
+   if ( (Test-IsDockerInstalled) -AND (Test-IsGitInstalled) ) {
+     if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
+       New-Item -Path "$HOME\Documents\Git" -ItemType Directory
+     }
+
+     $CurrentLocation = Get-Location
+     Set-Location -Path "$HOME\Documents\Git" 
+
+     #pull down the example from github
+     if (-NOT (Test-Path -Path "$HOME\Documents\Git\aci-helloworld")) {
+      git clone https://github.com/Azure-Samples/aci-helloworld.git
+     }
+
+     #build the image
+     docker build ./aci-helloworld -t aci-tutorial-app
+     #docker images  should show the built image
+#endregion
+#region UploadDockerImage
+     # now have Docker connect to our Azure container registry
+     $creds.Password | docker login $registry.LoginServer -u $creds.Username --password-stdin
+
+     #tag our aci-tutorial-app image with its new target image information
+     $image = $registry.LoginServer + '/aci-helloworld:v1'
+     docker tag  aci-tutorial-app $image
+
+     #and finally, push it up to the Azure container registry
+     docker push $image
+#endregion
+#region LaunchDockerContainer
+     ### OK! We can now spin up a running container!
+     # must convert the Registry password to a credential
+     $secpasswd = ConvertTo-SecureString -String $creds.Password -AsPlainText -Force
+     $pscred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList ($creds.Username, $secpasswd)
+
+     #and use a unique DNS name
+     $dnsname = 'aci-demo-' + (Get-Random -Maximum 9999)
+     # locations to run containers currently: 'westus,eastus,westeurope,westus2,northeurope,southeastasia'.
+
+     New-AzureRmContainerGroup -ResourceGroup $RG  -Location southeastasia `
+                               -Name 'mycontainer' -Image $image `
+                               -RegistryCredential $pscred `
+                               -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
+#endregion
+    Set-Location -Path $CurrentLocation
+   }
+   else {
+     Write-Verbose -Message 'GIT and/or DOCKER not installed. Skipping...'
+   }
+ }
+#endregion
+#region EncryptVMdisk
+## apply encryption to an existing/running VM
+## this will need a reboot to take effect
+#region Feature UnifiedDiskEncryption
+$State=Get-AzureRmProviderFeature -ProviderNamespace Microsoft.Compute -FeatureName 'UnifiedDiskEncryption'
+if ($State.RegistrationState -eq 'NotRegistered') {
+  Write-Verbose 'Register-AzureRmProviderFeature UnifiedDiskEncryption...'
+  Register-AzureRmProviderFeature -ProviderNamespace Microsoft.Compute -FeatureName 'UnifiedDiskEncryption'
+  Do {
+    start-sleep -Seconds 30
+    $state=Get-AzureRmProviderFeature -ProviderNamespace Microsoft.Compute -FeatureName 'UnifiedDiskEncryption"'
+  } 
+  until ($state.RegistrationState -eq 'Registered')
+}
+#endregion
+  Write-Verbose -Message 'Encrypting VM disks'
+#region Melbourne Ubuntu VM
+  # which keyvault will hold the encryption keys.
+
+  $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
+  $DiskEncryptionKeyVaultUrl = $MelKeyVault.VaultUri
+  $KeyVaultResourceId        = $MelKeyVault.ResourceId
+
+  $encryptionKeyName   = 'LXVMEncryptionKey'
+  $KeyEncryptionKey    =  Add-AzureKeyVaultKey -VaultName $KeyVaultMelbourne -Name $encryptionKeyName -Destination 'Software'
+  $keyEncryptionKeyUrl = (Get-AzureKeyVaultKey -VaultName $KeyVaultMelbourne -Name $encryptionKeyName).Key.kid;
+
+  if (-NOT (Get-AzureRmVMDiskEncryptionStatus -ResourceGroupName $RG -VMname $MelbourneUbuntu -EA SilentlyContinue)) {
+   Write-Verbose -Message ('Encrypting {0}' -f $MelbourneUbuntu)
+
+   Set-AzureRmVMDiskEncryptionExtension -ResourceGroupName $RG -VMName $MelbourneUbuntu `
+                                        -DiskEncryptionKeyVaultUrl $DiskEncryptionKeyVaultUrl `
+                                        -DiskEncryptionKeyVaultId  $KeyVaultResourceId `
+                                        -KeyEncryptionKeyUrl       $keyEncryptionKeyUrl `
+                                        -KeyEncryptionKeyVaultId   $keyVaultResourceId `
+                                        -VolumeType OS `
+                                        -Force
+  }
+#endregion
+#region Sydney Lx VMSS
+
+  $SydKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultSydney -ResourceGroupName $RG
+  $DiskEncryptionKeyVaultUrl = $SydKeyVault.VaultUri
+  $KeyVaultResourceId        = $SydKeyVault.ResourceId
+
+  $encryptionKeyName   = 'LXVMEncryptionKey'
+  $KeyEncryptionKey    =  Add-AzureKeyVaultKey -VaultName $KeyVaultSydney -Name $encryptionKeyName -Destination 'Software'
+  $keyEncryptionKeyUrl = (Get-AzureKeyVaultKey -VaultName $KeyVaultSydney -Name $encryptionKeyName).Key.kid;
+
+  $Status=Get-AzureRmVmssVMDiskEncryptionStatus -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS
+  Set-AzureRmVmssDiskEncryptionExtension -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS `
+                                         -DiskEncryptionKeyVaultUrl $DiskEncryptionKeyVaultUrl `
+                                         -DiskEncryptionKeyVaultId  $KeyVaultResourceId `
+                                         -KeyEncryptionKeyUrl       $keyEncryptionKeyUrl `
+                                         -KeyEncryptionKeyVaultId   $keyVaultResourceId `
+                                         -KeyEncryptionAlgorithm RSA-OAEP `
+                                         -Force  `
+                                         -VolumeType Data  # ALL is not supported.
+#endregion
+#endregion
+#region DockerWindowsContainer
+
+  function Test-IsDockerInstalled {
+   [CmdletBinding()] 
+	[OutputType([bool])] 
+	Param () 
+
+    $IsDockerInstalled=$false
+    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+
+
+    if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
+
+    Write-Output -InputObject $IsDockerInstalled
+  }
+
+  function Test-IsDockerWindowsMode {
+    [CmdletBinding()] 
+	[OutputType([bool])] 
+	Param () 
+
+    $IsDockerWindowsMode=$false
+    if (Test-IsDockerInstalled) {
+      $DockerVersion = (Docker version)
+
+      $DockerVersion | Foreach-Object {
+         if ( $_ -Match 'OS/Arch:\s+(?<OS>\w+)/amd64' ) {
+          if ('windows' -eq $matches.OS) {$IsDockerWindowsMode=$true}
+         }
+      }
+    }
+    Write-Output -InputObject $IsDockerWindowsMode
+  }
+
+if (Test-IsDockerWindowsMode) {
+
+$content = @'
+# Use an official Python runtime as a base image
+FROM python:2.7-windowsservercore
+
+# Set the working directory to /app
+WORKDIR /app
+
+# Copy the current directory contents into the container at /app
+ADD . /app
+
+# Install any needed packages specified in requirements.txt
+RUN pip install -r requirements.txt
+
+# Make port 80 available to the world outside this container
+EXPOSE 80
+
+# Define environment variable
+ENV NAME World
+
+# Run app.py when the container launches
+CMD ["python", "app.py"]
+'@
+
+ $directory  = 'PythonWindowsContainer'
+ $pathname   = '{0}\{1}' -f $HOME, $directory
+ $Dockerfile = '{0}\{1}' -f $pathname, 'Dockerfile'
+
+ if (-NOT (Test-Path -Path $pathname)) {
+  $folder=New-Item -ItemType Directory -Path $pathname
+ }
+
+ $content | Out-File -FilePath $Dockerfile -Force -Encoding utf8
+
+ $OriginalLocation=Get-Location
+ Set-Location -Path $pathname
+ Get-Content Dockerfile | docker build -
+
+}
+else {
+  write-verbose -Message 'Docker is NOT in Windows mode'
+}
+#endregion
+#region ServiceFabricCluster
+#region ServiceFabricRG
+if (-NOT (Get-AzureRmResourceGroup -Name $RGSF -EA SilentlyContinue)) {
+  Write-Verbose -Message ("Creating RG '{0}'" -f $RGSF)
+  $null = New-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
+}
+$ServiceFabricMel = Get-AzureRmResourceGroup -Name $RGSF -Location $Melbourne
+#endregion
+#region ServiceFabricKeyVault
+ Write-Verbose -Message 'Creating (Service Fabric) Key Vault (Mel)'
+ #Service Fabric needs its own RG and Vault.
+ $tags = @{'function' = 'AzureThings'}
+ if (-NOT ( Get-AzureRmKeyVault -ResourceGroupName $RGSF -VaultName $KeyVaultMelSF -EA SilentlyContinue)) {
+  $MelKeyVaultSF=New-AzureRmKeyVault -ResourceGroupName $RGSF -Location $Melbourne `
+                                   -VaultName $KeyVaultMelSF `
+                                   -EnabledForTemplateDeployment `
+                                   -EnabledForDeployment `
+                                   -EnabledForDiskEncryption `
+                                   -Tag $tags
+ }
+ $MelKeyVaultSF=Get-AzureRmKeyVault -VaultName $KeyVaultMelSF -ResourceGroupName $RGSF
+ Set-AzureRmKeyVaultAccessPolicy -VaultName $KeyVaultMelSF -ServicePrincipalName abfa0a7c-a6b6-4736-8310-5855508787cd -PermissionsToSecrets get
+#endregion
 Write-Verbose -Message 'Creating Service Fabric Cluster'
 
 # A service Fabric cluster MUST be in the same location as the KeyVault.
 # AND must be in the same location as the RG
 # ergo this requires an RG/KeyVault/Service Fabric cluster to all be in Melbourne, 
-# as there is no KeyVault capability in Sydney
+# as there is no KeyVault capability in Sydney (yet)
 
 $SubscriptionCTX=Get-AzureRmContext
 $subscriptionId = $SubscriptionCTX.Subscription.Id
@@ -2281,110 +2984,32 @@ Write-Verbose -Message 'Importing into Cert: '
 Import-PfxCertificate -FilePath $certfile.FullName -Password $certpwd `
                       -CertStoreLocation 'Cert:\CurrentUser\My' -Exportable 
 #endregion
-#region APImanagement
-Write-Verbose -Message 'creating API Management. (Sydney)'  # WARNING: this takes 30 minutes..
-if (-NOT (Get-AzureRmApiManagement -ResourceGroupName $RG -Name $ApiMgtName -ErrorAction SilentlyContinue)) {
-New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtName -Organization 'myOrganization' -AdminEmail $MyEmail -Sku 'Developer'
-}
+#region Kubernetes
+  if (-NOT (Get-Module -Name 'AzureRM.Aks' -ListAvailable)) {
+    Write-Verbose -Message 'Installing module AzureRM.Aks'
+    Find-Module -Name AzureRM.Aks -AllowPrerelease | Install-Module -Force -AllowClobber
+  }
+#endregion
+#region HDinsight Cluster
+ # NOTE: HDinsight clusters are charged whenever they're running - used or not!
+ # https://docs.microsoft.com/en-us/azure/hdinsight/hdinsight-hadoop-create-linux-clusters-azure-powershell
 #endregion
 #region SetPolicy
-if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so do NOT do policy!
+if (-NOT ($Subscription -eq 'Azure CXP')) {    # CXP use a shared subscription, so I will NOT risk setting a policy!
   Write-Verbose -Message 'Creating Regional Policy'
+  $RegionsPattern='*australia*'
   $AZURETHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Sydney
-  if (-NOT (Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId)) {
-    $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like '*australia*'}
+  try {
+    $PolicyAssignment=Get-AzureRmPolicyAssignment -Name locationPolicyAssignment -Scope $AZURETHINGS.ResourceId
+    }
+    catch {
+    $Locations = Get-AzureRmLocation | Where-Object {$_.displayname -like $RegionsPattern}
     $AllowedLocations = @{'listOfAllowedLocations'=($Locations.location)}
     $Policy = Get-AzureRmPolicyDefinition | Where-Object {$_.Properties.DisplayName -eq 'Allowed locations' -and $_.Properties.PolicyType -eq 'BuiltIn'}
     # this will probably wreck something, so I'll need to TEST this first!
-    # $null=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $AZURETHINGS.ResourceId -PolicyParameterObject $AllowedLocations
+    $PolicyAssignment=New-AzureRmPolicyAssignment -Name locationPolicyAssignment -PolicyDefinition $Policy -Scope $AZURETHINGS.ResourceId -PolicyParameterObject $AllowedLocations
   }
+
+  $PolicyAssignment.Properties.parameters.listOfAllowedLocations.value
 }
-#endregion
-#region DockerContainerRegistry
-#https://docs.microsoft.com/en-us/azure/container-registry/container-registry-get-started-powershell
- if (-NOT (Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EA SilentlyContinue) ) {
-  if (Test-AzureRmContainerRegistryNameAvailability -Name $RegistryName) {
-    New-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -EnableAdminUser -Sku 'Basic' #-StorageAccountName $SydStorageAccount
-  }
-  else {
-    Write-Verbose  -Message ( 'Registry name {0} is already in use.' -f $RegistryName )
-  }
- }
- $Registry=Get-AzureRmContainerRegistry -ResourceGroupName $RG -Name $RegistryName -ErrorAction SilentlyContinue
- if ($registry) {
-   # we will need creds when we use Docker to upload container images to our repo in this registry
-   $creds = Get-AzureRmContainerRegistryCredential -Registry $Registry 
-   # assume GIT and DOCKER are installed
-   # https://github.com/git-for-windows/git/releases/download/v2.17.0.windows.1/Git-2.17.0-64-bit.exe
-   # https://download.docker.com/win/stable/Docker%20for%20Windows%20Installer.exe
-
-   $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
-   $GitExe='C:\Program Files\Git\cmd\git.exe'
-
-   if ( (Test-Path -path $DockerExe) -AND (Test-Path -path $GitExe) ) {
-     if (-NOT (Test-Path -Path $HOME\Documents\Git)) {
-       New-Item -Path "$HOME\Documents\Git" -ItemType Directory
-     }
-
-     $CurrentLocation = Get-Location
-     Set-Location -Path "$HOME\Documents\Git" 
-
-     #pull down the example from github
-     if (-NOT (Test-Path -Path "$HOME\Documents\Git\aci-helloworld")) {
-      git clone https://github.com/Azure-Samples/aci-helloworld.git
-     }
-
-     #build the image
-     docker build ./aci-helloworld -t aci-tutorial-app
-     #docker images  should show the built image
-
-     # now have Docker connect to our Azure container registry
-     $creds.Password | docker login $registry.LoginServer -u $creds.Username --password-stdin
-
-     #tag our aci-tutorial-app image with its new target image information
-     $image = $registry.LoginServer + '/aci-helloworld:v1'
-     docker tag  aci-tutorial-app $image
-
-     #and finally, push it up to the Azure contaner registry
-     docker push $image
-
-     ### OK! We can now spin up a running container!
-     # must convert the Registry password to a credential
-     $secpasswd = ConvertTo-SecureString -String $creds.Password -AsPlainText -Force
-     $pscred = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList ($creds.Username, $secpasswd)
-
-     #and use a unique DNS name
-     $dnsname = 'aci-demo-' + (Get-Random -Maximum 9999)
-     # locations to run containers currently: 'westus,eastus,westeurope,westus2,northeurope,southeastasia'.
-
-     New-AzureRmContainerGroup -ResourceGroup $RG  -Location southeastasia `
-                               -Name 'mycontainer' -Image $image `
-                               -RegistryCredential $pscred `
-                               -Cpu 1 -MemoryInGB 1 -DnsNameLabel $dnsname
-    #
-    Set-Location -Path $CurrentLocation
-   }
-   else {
-     Write-Verbose -Message 'GIT and/or DOCKER not installed. Skipping...'
-   }
- }
-#endregion
-#region EncryptVMdisk
-## apply encryption to an existing/running VM
-## this will need a reboot to take effect
-
-  # this app-service will need permission to the KeyVault.
-  $AADClientID     = '<clientID of your Azure AD app>'
-  $AADClientSecret = '<clientSecret of your Azure AD app>'
-
-  # which keyvault will hold the encryption keys.
-  $VaultName= 'MyKeyVault'
-  $MelKeyVault=Get-AzureRmKeyVault -VaultName $KeyVaultMelbourne -ResourceGroupName $RG
-
-
-  #Get-AzureRmVMDiskEncryptionStatus [-ResourceGroupName] <String> [-VMName] <String> [[-Name] <String>] [-DefaultProfile <IAzureContextContainer>] [-ExtensionPublisherName 
-  #  <String>] [-ExtensionType <String>] [<CommonParameters>]
-  #Set-AzureRmVMDiskEncryptionExtension -ResourceGroupName $RGName -VMName $VMName -Force `
-  #                                     -AadClientID $AADClientID -AadClientSecret $AADClientSecret `
-  #                                     -DiskEncryptionKeyVaultUrl $MelKeyVault.VaultUri -DiskEncryptionKeyVaultId $MelKeyVault.ResourceId
 #endregion
