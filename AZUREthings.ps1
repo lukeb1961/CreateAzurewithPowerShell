@@ -2358,6 +2358,7 @@ Set-AzureRmResource -PropertyObject $PropertiesObject -ResourceGroupName $TMRG2 
                     -ResourceType Microsoft.Web/sites/sourcecontrols `
                     -ResourceName $webapp2/web -ApiVersion 2015-08-01 -Force
 
+
 # Create a Traffic Manager profile.
 $tm = New-AzureRmTrafficManagerProfile -Name 'MyTrafficManagerProfile' -ResourceGroupName $TMRG1 `
                                        -TrafficRoutingMethod Priority -RelativeDnsName $web1.Name -Ttl 60 `
@@ -2365,9 +2366,9 @@ $tm = New-AzureRmTrafficManagerProfile -Name 'MyTrafficManagerProfile' -Resource
 
 
 # Create an endpoint for the location one website deployment and set it as the priority target.
-$endpoint = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint1' -ProfileName $tm.Name `
-                                              -ResourceGroupName $TMRG1 -Type AzureEndpoints -Priority 1 `
-                                              -TargetResourceId $web1.Id -EndpointStatus Enabled
+$endpoint1 = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint1' -ProfileName $tm.Name `
+                                               -ResourceGroupName $TMRG1 -Type AzureEndpoints -Priority 1 `
+                                               -TargetResourceId $web1.Id -EndpointStatus Enabled
 
 # Create an endpoint for the location two website deployment and set it as the secondary target.
 $endpoint2 = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint2' -ProfileName $tm.Name `
@@ -2573,18 +2574,23 @@ function New-AzureRMCosmosDBAPIaccount {
     if ($MongoDB) {
       New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
                           -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties `
-                          -Kind 'MongoDB'
+                          -Kind 'MongoDB' -Force
     }
     else {
       New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
-                        -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties
+                          -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties -Force
     }
 
   }
 
 }
 #endregion
+#create the CosmosDB account
 New-AzureRMCosmosDBAPIaccount -ResourceGroupName $RG -accountName $CosmosDBname -locationNames $Sydney -defaultConsistencyLevel Eventual
+
+# Retrieve a connection string that can be used by a MongoDB client
+Invoke-AzureRmResourceAction -Action listConnectionStrings -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
+                             -ApiVersion "2015-04-08" -ResourceGroupName $RG -Name $CosmosDBname -Force
 #endregion
 #endregion
 #region VPNgateways
