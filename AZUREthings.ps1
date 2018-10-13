@@ -90,8 +90,9 @@ function Test-AdminRights
 #endregion
 #region Variables
 Write-Verbose -Message 'Set variables'
-$RG   = $MyName + '-AZUREthings'
-$RGSF = $MyName + '-ServiceFabricMel'
+$RG    = $MyName + '-AZUREthings'
+$RGSF  = $MyName + '-ServiceFabricMel'
+$RGASR = $MyName + '-ASRMel'
 
 $TMRG1 = $MyName + 'TrafficMgrRG1'
 $TMRG2 = $MyName + 'TrafficMgrRG2'
@@ -115,7 +116,15 @@ $HDIclustername    = ($MyName + '-HDInsightCluster').ToLower()
 $MelAutomation     = $MyName + '-MelAutomation'  
 $appDisplayName    = $MelAutomation + '-AutoAppDisplayName'
 $MelLogAnalyticsWS = ($MyName + '-Mel-log-analytics').ToLower()
-$BackUpVaultSydney = ($MyName + '-SydBackupVault').ToLower()
+
+$BackUpVaultSydney    = ($MyName + '-SydBackupVault').ToLower()
+$BackUpVaultMelbourne = ($MyName + '-MelBackupVault').ToLower()
+
+$SydASRFabricName      = 'SydASRFabric'
+$MelASRFabricName      = 'MelASRFabric'
+$SydASRContainerName   = 'AUEastProtectionContainer'
+$MelASRContainerName   = 'AUSouthEastProtectionContainer'
+$ASRpolicyName         = 'A2APolicy'
 
 $KeyVaultMelbourne =  $MyName + '-MelKeyVlt'      #'^[a-zA-Z0-9-]{3,24}$'.
 $KeyVaultMelSF     =  $MyName + '-MelSFKeyVlt'    #'^[a-zA-Z0-9-]{3,24}$'.
@@ -674,6 +683,16 @@ While (-NOT ($AZURETHINGS) ) {
   start-sleep -Seconds 2
 }
 
+Write-Verbose -Message 'ASR Resource Group'
+if (-NOT (Get-AzureRmResourceGroup -Name $RGASR -EA SilentlyContinue)) {
+  Write-Verbose -Message ("Creating RG '{0}'" -f $RGASR)
+  $null = New-AzureRmResourceGroup -Name $RGASR -Location $Melbourne
+}
+While (-NOT ($AZUREASRTHINGS) ) {
+  $AZUREASRTHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Melbourne
+  start-sleep -Seconds 2
+}
+
 #endregion
 #region RBAC
 # example of granting a user from another company (e.g. a consultant) access to our things as a Contributor
@@ -783,6 +802,18 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
                                         -Subnet $DMZSubnet, $FESubnet, $BESubnet `
                                         -Tag @{Name='MyLocationTagHere';Value='SydneySecure'}
   $null=Set-AzureRMVirtualNetwork -VirtualNetwork $SydSecVnet
+}
+
+#Create a Recovery Network in the ASR recovery region
+Write-Verbose -Message ("Creating Vnet '{0}'" -f 'a2arecoveryvnet')
+if (Get-AzureRmResourceGroup -Name $RGASR -EA SilentlyContinue) {
+ if (-NOT (Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR -EA SilentlyContinue)) {
+  $MelRecoveryVnet = New-AzureRmVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR -Location $Melbourne -AddressPrefix '10.0.0.0/16'
+  $MelRecoveryVnet=Add-AzureRmVirtualNetworkSubnetConfig -Name 'default' -VirtualNetwork $MelRecoveryVnet -AddressPrefix '10.0.0.0/20'
+  $null=Set-AzureRMVirtualNetwork -VirtualNetwork $MelRecoveryVnet
+ }
+ $MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR
+ $MelbourneRecoveryNetwork = $MelRecoveryVnet.Id
 }
 #endregion
 #region PublicIPs
@@ -1022,6 +1053,13 @@ if (-NOT (Get-AzureRmLoadBalancer -name $SydlxLBname -ResourceGroupName $RG -EA 
   $MelLXavSet  = Get-AzureRmAvailabilitySet -ResourceGroupName $RG -Name Mel-LX-AVset
   $MelBSDavSet = Get-AzureRmAvailabilitySet -ResourceGroupName $RG -Name Mel-BSD-AVset
   $MelWINavSet = Get-AzureRmAvailabilitySet -ResourceGroupName $RG -Name Mel-WIN-AVset
+
+  # the AVset for the ASR recovery group
+  if (-NOT (Get-AzureRmAvailabilitySet -ResourceGroupName $RGASR -Name Mel-ASR-AVset -EA SilentlyContinue)) {
+   $null=New-AzureRmAvailabilitySet -Name Mel-ASR-AVset -ResourceGroupName $RGASR -Location $Melbourne
+  }
+  $MelASRavSet = Get-AzureRmAvailabilitySet -ResourceGroupName $RGASR -Name Mel-ASR-AVset
+
 #endregion
 #region KeyVault
 #region Melbourne
@@ -1574,7 +1612,7 @@ $vstsBasicAuthHeader=$headers
   ## see https://docs.microsoft.com/en-us/azure/azure-functions/functions-infrastructure-as-code
   ## see https://gist.github.com/mikehowell/8562b81e24a3b0c16839578f8680a192
 
- Write-Verbose -mess 'Create Azure Function App engine'
+ Write-Verbose -Message 'Create Azure Function App engine'
  $functionAppResource = Get-AzureRmResource | Where-Object {$_.ResourceName -eq $functionAppName -And $_.ResourceType -eq 'Microsoft.Web/Sites'}
  if ($null -eq $functionAppResource) {
    $functionAppResource=New-AzureRmResource -ResourceType 'Microsoft.Web/Sites' -ResourceName $functionAppName -Kind 'functionapp' -Location $Sydney -ResourceGroupName $RG -Properties @{} -Force
@@ -1588,7 +1626,7 @@ $vstsBasicAuthHeader=$headers
 
  $SB = {
 # POST method: $req
-$requestBody = Get-Content $req -Raw | ConvertFrom-Json
+$requestBody = Get-Content -Path $req -Raw | ConvertFrom-Json
 $name = $requestBody.name
 
 # GET method: each querystring parameter is its own variable
@@ -1620,7 +1658,7 @@ $props = @{
          'direction' = 'out'
      }
    )
-   'disabled' = "false"
+   'disabled' = 'false'
   }
   files = @{ 'run.ps1' = $SB }
 }
@@ -1659,6 +1697,136 @@ if (-NOT (Get-AzureRmRecoveryServicesVault -Name $BackUpVaultSydney -ResourceGro
 $BackupVault = Get-AzureRmRecoveryServicesVault –Name $BackUpVaultSydney
 Set-AzureRmRecoveryServicesBackupProperties  -Vault $BackupVault `
                                              -BackupStorageRedundancy GeoRedundant
+
+Write-Verbose -Message 'creating Recovery Services Vault. (Melbourne)'
+if (-NOT (Get-AzureRmRecoveryServicesVault -Name $BackUpVaultMelbourne -ResourceGroupName $RGASR -EA SilentlyContinue)) {
+   $BackupVault=New-AzureRmRecoveryServicesVault -Name $BackUpVaultMelbourne `
+                                                 -ResourceGroupName $RGASR `
+                                                 -Location $Melbourne 
+}
+$BackupVaultMel = Get-AzureRmRecoveryServicesVault –Name $BackUpVaultMelbourne
+Set-AzureRmRecoveryServicesBackupProperties  -Vault $BackupVaultMel `
+                                             -BackupStorageRedundancy GeoRedundant
+
+#endregion
+#region ASRfabric
+
+$VaultSettings=Set-AzureRmRecoveryServicesAsrVaultContext -Vault $BackupVaultMel
+
+#create the Azure Site Recovery fabric for Sydney
+Write-Verbose -Message 'creating Azure Site Recovery fabric. (Sydney)'
+if (-NOT ( Get-AzureRmRecoveryServicesAsrFabric -Name $SydASRFabricName -EA SilentlyContinue) ) { 
+ $TempASRJob=New-AzureRmRecoveryServicesAsrFabric -Name $SydASRFabricName -Azure -Location $Sydney
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$SydASRFabric = Get-AzureRmRecoveryServicesAsrFabric -Name $SydASRFabricName 
+
+#create the Azure Site Recovery fabric for Melbourne
+Write-Verbose -Message 'creating Azure Site Recovery fabric. (Melbourne)'
+if (-NOT ( Get-AzureRmRecoveryServicesAsrFabric -Name $MelASRFabricName -EA SilentlyContinue) ) {
+ $TempASRJob=New-AzureRmRecoveryServicesAsrFabric -Name $MelASRFabricName -Azure -Location $Melbourne
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$MelASRFabric = Get-AzureRmRecoveryServicesAsrFabric -Name $MelASRFabricName 
+
+#Create a Protection container in the primary Azure region (within the Primary fabric)
+Write-Verbose -Message 'creating Azure Site Recovery protection container. (Sydney)'
+if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric -Name $SydASRContainerName -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrProtectionContainer -InputObject $SydASRFabric -Name $SydASRContainerName
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$PrimaryProtContainer = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric -Name $SydASRContainerName
+
+#Create a Protection container in the Recovery region (within the Recovery fabric)
+Write-Verbose -Message 'creating Azure Site Recovery protection container. (Melbourne)'
+if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $MelASRFabric -Name $MelASRContainerName -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrProtectionContainer -InputObject $MelASRFabric -Name $MelASRContainerName
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$RecoveryProtContainer = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $MelASRFabric -Name $MelASRContainerName
+
+#Create the replication policy
+Write-Verbose -Message 'creating Azure Site Recovery (AzureToAzure) replication Policy'
+if (-NOT (Get-AzureRmRecoveryServicesAsrPolicy -Name $ASRPolicyName -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrPolicy -AzureToAzure -Name $ASRPolicyName -RecoveryPointRetentionInHours 24 -ApplicationConsistentSnapshotFrequencyInHours 4
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+
+$ReplicationPolicy = Get-AzureRmRecoveryServicesAsrPolicy -Name $ASRPolicyName
+
+#Create Protection container mapping between the Primary and Recovery Protection Containers with the Replication policy
+Write-Verbose -Message 'creating Azure Site Recovery protection container mapping'
+if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $PrimaryProtContainer -Name 'A2APrimaryToRecovery' -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrProtectionContainerMapping -Name 'A2APrimaryToRecovery' -Policy $ReplicationPolicy -PrimaryProtectionContainer $PrimaryProtContainer -RecoveryProtectionContainer $RecoveryProtContainer
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$SydToMelPCMapping = Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $PrimaryProtContainer -Name 'A2APrimaryToRecovery'
+
+#Create Protection container mapping (for failback) between the Recovery and Primary Protection Containers with the Replication policy
+Write-Verbose -Message 'creating Azure Site Recovery protection container (failback) mapping'
+if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $RecoveryProtContainer -Name 'A2ARecoveryToPrimary' -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrProtectionContainerMapping -Name 'A2ARecoveryToPrimary' -Policy $ReplicationPolicy -PrimaryProtectionContainer $RecoveryProtContainer -RecoveryProtectionContainer $PrimaryProtContainer
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$MelToSydPCMapping = Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $RecoveryProtContainer -Name 'A2ARecoveryToPrimary'
+
+#Create an ASR network mapping between the primary Azure virtual network and the recovery Azure virtual network
+Write-Verbose -Message 'creating Azure Site Recovery network mapping (SydToMel)'
+
+$MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR
+$MelbourneRecoveryNetwork = $MelRecoveryVnet.Id
+$SydPrimaryVnet=Get-AzureRMVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
+$SydneyPrimaryNetwork = $SydPrimaryVnet.Id
+
+if (-NOT (Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2ASydToMelNWMapping' -PrimaryFabric  $SydASRFabric -EA SilentlyContinue)) {
+ $TempASRJob = New-AzureRmRecoveryServicesAsrNetworkMapping -AzureToAzure -Name 'A2ASydToMelNWMapping' -PrimaryFabric  $SydASRFabric  -PrimaryAzureNetworkId $SydneyPrimaryNetwork -RecoveryFabric  $MelASRFabric  -RecoveryAzureNetworkId $MelbourneRecoveryNetwork
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$A2ASydToMelNwMapping = Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2ASydToMelNWMapping' -PrimaryFabric  $SydASRFabric
+
+if (-NOT (Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2AMelToSydNWMapping' -PrimaryFabric  $MelASRFabric -EA SilentlyContinue)) {
+ #Create an ASR network mapping for failback between the recovery Azure virtual network and the primary Azure virtual network
+ Write-Verbose -Message 'creating Azure Site Recovery network failback mapping (MelToSyd)'
+ $TempASRJob = New-AzureRmRecoveryServicesAsrNetworkMapping -AzureToAzure -Name 'A2AMelToSydNWMapping' -PrimaryFabric $MelASRFabric -PrimaryAzureNetworkId $MelbourneRecoveryNetwork -RecoveryFabric $SydASRFabric -RecoveryAzureNetworkId $SydneyPrimaryNetwork
+ $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ do {
+   start-sleep -Seconds 2
+   $status=Get-AzureRmRecoveryServicesAsrJob -Name $TempASRJob.Name
+ } while ($status.StateDescription -ne 'Completed')
+}
+$A2AMelToSydNwMapping=Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2AMelToSydNWMapping' -PrimaryFabric  $MelASRFabric
 
 #endregion
 #region OMS
@@ -1800,6 +1968,18 @@ $OIWSurl=$OIWS.PortalUrl
 #region LXvmss
   Write-Verbose -Message 'Creating LINUX VMSS config (Sydney)'
   $SydlxVMSScapacity=2
+  $NodePIP=@()
+  for ($i=0; $i -lt $SydlxVMSScapacity; $i++) {
+    $PipName = 'sydlxVMSSpip{0}' -f $i
+
+    if ( -NOT (    Get-AzureRmPublicIpAddress -Name $PipName -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
+      $null=New-AzureRMPublicIpAddress -Name $PipName -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic  
+    }
+
+    $NodePIP += Get-AzureRmPublicIpAddress -Name $PipName -ResourceGroupName $RG -ErrorAction SilentlyContinue
+  }
+
+
 # Create a VMSS config object
 $SydlxVMSSConfig = New-AzureRmVmssConfig -Location $Sydney `
                                        -SkuCapacity $SydlxVMSScapacity -SkuName Standard_DS2 `
@@ -1818,11 +1998,15 @@ $SydlxVMSSConfig=Set-AzureRmVmssOsProfile -VirtualMachineScaleSet $SydlxVMSSConf
                                         -AdminUsername $user -AdminPassword $password `
                                         -ComputerNamePrefix SydLX
 
-$SydVnet      = Get-AzureRmVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
+$SydVnet     = Get-AzureRmVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
 $SydLXsubnet = Get-AzureRmVirtualNetworkSubnetConfig -Name $LXsubnetName -VirtualNetwork $SydVnet
-$ipConfig = New-AzureRmVmssIpConfig -Name 'VMSSIPConfig' `
+
+
+$PublicIPconfig = New-AzureRmNetworkInterfaceIpConfig -Name 'PublicIP'  -PublicIpAddress $PIP1
+
+$ipConfig    = New-AzureRmVmssIpConfig -Name 'VMSSIPConfig' `
                                     -LoadBalancerBackendAddressPoolsId $SydlxLB.BackendAddressPools[0].Id `
-                                    -SubnetId $SydLXsubnet.Id
+                                    -SubnetId $SydLXsubnet.Id #-PublicIPAddressConfigurationName $PublicIPconfig
 
 # Attach the virtual network to the config object
 $SydlxVMSSConfig=Add-AzureRmVmssNetworkInterfaceConfiguration -VirtualMachineScaleSet $SydlxVMSSConfig `
@@ -2281,6 +2465,59 @@ else {
   }
 #endregion
 #endregion
+#region enableASR
+#Get the resource group that the virtual machine must be created in when failed over.
+$RecoveryRG = Get-AzureRmResourceGroup -Name $RGASR -Location $Melbourne
+
+#Specify replication properties for each disk of the VM that is to be replicated (create disk replication configuration)
+if (Get-AzureRmVM -ResourceGroupName $RG -Name $SydneyWinSvr -EA SilentlyContinue) {
+ $vm = Get-AzureRmVM -ResourceGroupName $RG -Name $SydneyWinSvr
+
+ #OsDisk
+ if ($VM.StorageProfile.OsDisk.ManagedDisk) {
+  $OSdiskId                       = $VM.StorageProfile.OsDisk.ManagedDisk.Id
+  $RecoveryReplicaDiskAccountType = $VM.StorageProfile.OsDisk.ManagedDisk.StorageAccountType
+  $RecoveryOSDiskAccountType      = $VM.StorageProfile.OsDisk.ManagedDisk.StorageAccountType
+
+  $OSDiskReplicationConfig = New-AzureRmRecoveryServicesAsrAzureToAzureDiskReplicationConfig -managed `
+                                  -LogStorageAccountId $storageAccount.Id `
+                                  -DiskId $OSdiskId -RecoveryResourceGroupId $RecoveryRG.ResourceId `
+                                  -RecoveryReplicaDiskAccountType $RecoveryReplicaDiskAccountType `
+                                  -RecoveryOSDiskAccountType $RecoveryOSDiskAccountType
+ }
+ else {
+  $MelStorage   = Get-AzureRmStorageAccount -ResourceGroupName $RG -Name $MelStorageAccount
+  $SydStorage   = Get-AzureRmStorageAccount -ResourceGroupName $RG -Name $SydStorageAccount
+
+  $OSDiskVhdURI = $VM.StorageProfile.OsDisk.Vhd
+
+#      -LogStorageAccountId <System.String>
+#        Specifies the log or cache storage account Id to be used to store replication logs.
+#        The cache storage account specified must be located in the same region as the source VM.
+# 
+  $OSDiskReplicationConfig = New-AzureRmRecoveryServicesAsrAzureToAzureDiskReplicationConfig `
+                                  -VhdUri $OSDiskVhdURI.Uri -LogStorageAccountId $SydStorage.Id `
+                                  -RecoveryAzureStorageAccountId $MelStorage.Id
+ }
+}
+
+#Create a list of disk replication configuration objects for the disks of the virtual machine that are to be replicated.
+$diskconfigs = @()
+$diskconfigs += $OSDiskReplicationConfig, $DataDisk1ReplicationConfig
+
+
+#Start replication by creating replication protected item. Using a GUID for the name of the replication protected item to ensure uniqueness of name.
+$TempASRJob = New-AzureRmRecoveryServicesAsrReplicationProtectedItem -AzureToAzure -AzureVmId $VM.Id -Name (New-Guid).Guid `
+                                              -ProtectionContainerMapping $SydToMelPCMapping `
+                                              -AzureToAzureDiskReplicationConfiguration $OSDiskReplicationConfig `
+                                              -RecoveryResourceGroupId $RecoveryRG.ResourceId
+
+<#
+  # check the protection state via
+  $containers = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric
+  $containers | Get-AzureRmRecoveryServicesAsrReplicationProtectedItem
+#>
+#endregion
 #region enableVMSSautoscale
   #if the VMSS in Sydney is there, add some autoscale coolness based on CPU
 
@@ -2320,14 +2557,14 @@ else {
 # The values of the variables below must be unique (replace with your own names).
 $webApp1  = "mywebapp$(Get-Random)"
 $webApp2  = "mywebapp$(Get-Random)"
-$webAppL1 = "MyWebAppL1"
-$webAppL2 = "MyWebAppL2"
+$webAppL1 = 'MyWebAppL1'
+$webAppL2 = 'MyWebAppL2'
 
 New-AzureRmResourceGroup -Name $TMRG1 -Location $Sydney
 New-AzureRmResourceGroup -Name $TMRG2 -Location $Melbourne
 
 # Create a website deployed from GitHub in both regions (replace with your own GitHub URL).
-$gitrepo="https://github.com/Azure-Samples/app-service-web-dotnet-get-started.git"
+$gitrepo='https://github.com/Azure-Samples/app-service-web-dotnet-get-started.git'
 
 # Create a hosting plan and website and deploy it in location one (requires Standard 1 minimum SKU).
 $appServicePlan = New-AzureRmAppServicePlan -Name $webappl1 -ResourceGroupName $TMRG1 -Location $Sydney -Tier Standard 
@@ -2336,8 +2573,8 @@ $web1 = New-AzureRmWebApp -ResourceGroupName $TMRG1 -Name $webApp1 -Location $Sy
 # Configure GitHub deployment from your GitHub repo and deploy once.
 $PropertiesObject = @{
     repoUrl = "$gitrepo";
-    branch = "master";
-    isManualIntegration = "true";
+    branch = 'master';
+    isManualIntegration = 'true';
 }
 
 Set-AzureRmResource -PropertyObject $PropertiesObject -ResourceGroupName $TMRG1 `
@@ -2350,8 +2587,8 @@ $web2 = New-AzureRmWebApp -ResourceGroupName $TMRG2 -Name $webApp2 -Location $Me
 
 $PropertiesObject = @{
     repoUrl = "$gitrepo";
-    branch = "master";
-    isManualIntegration = "true";
+    branch = 'master';
+    isManualIntegration = 'true';
 }
 
 Set-AzureRmResource -PropertyObject $PropertiesObject -ResourceGroupName $TMRG2 `
@@ -2590,7 +2827,7 @@ New-AzureRMCosmosDBAPIaccount -ResourceGroupName $RG -accountName $CosmosDBname 
 
 # Retrieve a connection string that can be used by a MongoDB client
 Invoke-AzureRmResourceAction -Action listConnectionStrings -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
-                             -ApiVersion "2015-04-08" -ResourceGroupName $RG -Name $CosmosDBname -Force
+                             -ApiVersion '2015-04-08' -ResourceGroupName $RG -Name $CosmosDBname -Force
 #endregion
 #endregion
 #region VPNgateways
@@ -2667,7 +2904,7 @@ New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtN
 	Param () 
 
     $IsGitInstalled=$False
-    $GitExe='C:\Program Files\Git\cmd\git.exe'
+    $GitExe="$env:ProgramW6432\Git\cmd\git.exe"
 
     if (Test-Path -path $GitExe) {$IsGitInstalled=$True}
 
@@ -2680,7 +2917,7 @@ New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtN
 	Param () 
 
     $IsDockerInstalled=$false
-    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+    $DockerExe="$env:ProgramW6432\Docker\Docker\Docker for Windows.exe"
 
 
     if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
@@ -2788,7 +3025,7 @@ New-AzureRmApiManagement -ResourceGroupName $RG -Location $Sydney -Name $ApiMgtN
 #region Feature UnifiedDiskEncryption
 $State=Get-AzureRmProviderFeature -ProviderNamespace Microsoft.Compute -FeatureName 'UnifiedDiskEncryption'
 if ($State.RegistrationState -eq 'NotRegistered') {
-  Write-Verbose 'Register-AzureRmProviderFeature UnifiedDiskEncryption...'
+  Write-Verbose -Message 'Register-AzureRmProviderFeature UnifiedDiskEncryption...'
   Register-AzureRmProviderFeature -ProviderNamespace Microsoft.Compute -FeatureName 'UnifiedDiskEncryption'
   Do {
     start-sleep -Seconds 30
@@ -2831,7 +3068,7 @@ if ($State.RegistrationState -eq 'NotRegistered') {
   $KeyEncryptionKey    =  Add-AzureKeyVaultKey -VaultName $KeyVaultSydney -Name $encryptionKeyName -Destination 'Software'
   $keyEncryptionKeyUrl = (Get-AzureKeyVaultKey -VaultName $KeyVaultSydney -Name $encryptionKeyName).Key.kid;
 
-  $Status=Get-AzureRmVmssVMDiskEncryptionStatus -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS
+  $Status=Get-AzureRmVmssVMDiskEncryption -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS
   Set-AzureRmVmssDiskEncryptionExtension -ResourceGroupName $RG -VMScaleSetName $SydneyLxVMSS `
                                          -DiskEncryptionKeyVaultUrl $DiskEncryptionKeyVaultUrl `
                                          -DiskEncryptionKeyVaultId  $KeyVaultResourceId `
@@ -2850,7 +3087,7 @@ if ($State.RegistrationState -eq 'NotRegistered') {
 	Param () 
 
     $IsDockerInstalled=$false
-    $DockerExe='C:\Program Files\Docker\Docker\Docker for Windows.exe'
+    $DockerExe="$env:ProgramW6432\Docker\Docker\Docker for Windows.exe"
 
 
     if (Test-Path -path $DockerExe) {$IsDockerInstalled=$True}
@@ -2913,7 +3150,7 @@ CMD ["python", "app.py"]
 
  $OriginalLocation=Get-Location
  Set-Location -Path $pathname
- Get-Content Dockerfile | docker build -
+ Get-Content -Path Dockerfile | docker build -
 
 }
 else {
