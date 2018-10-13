@@ -689,7 +689,7 @@ if (-NOT (Get-AzureRmResourceGroup -Name $RGASR -EA SilentlyContinue)) {
   $null = New-AzureRmResourceGroup -Name $RGASR -Location $Melbourne
 }
 While (-NOT ($AZUREASRTHINGS) ) {
-  $AZUREASRTHINGS = Get-AzureRmResourceGroup -Name $RG -Location $Melbourne
+  $AZUREASRTHINGS = Get-AzureRmResourceGroup -Name $RGASR -Location $Melbourne
   start-sleep -Seconds 2
 }
 
