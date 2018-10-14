@@ -144,6 +144,7 @@ $ContainerPolicyName = 'ScriptContainerPolicy'
 
 $functionAppName   = $MyName + '-FunctionApp'
 
+$a2aRecoveryVnet   = 'a2arecoveryvnet'
 $VnetSydneySec     = 'Secure-vnet-Sydney'
 $VnetSydneySecAddr = '192.168.0.0/16'
 $SydDMZsubnet      = 'DMZ-subnet'
@@ -805,14 +806,14 @@ if (-NOT (Get-AzureRMVirtualNetwork -Name $VnetSydneySec -ResourceGroupName $RG 
 }
 
 #Create a Recovery Network in the ASR recovery region
-Write-Verbose -Message ("Creating Vnet '{0}'" -f 'a2arecoveryvnet')
+Write-Verbose -Message ("Creating Vnet '{0}' with addr space '{1}' " -f $a2aRecoveryVnet,$VnetSydneyAddr)
 if (Get-AzureRmResourceGroup -Name $RGASR -EA SilentlyContinue) {
- if (-NOT (Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR -EA SilentlyContinue)) {
-  $MelRecoveryVnet = New-AzureRmVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR -Location $Melbourne -AddressPrefix '10.0.0.0/16'
-  $MelRecoveryVnet=Add-AzureRmVirtualNetworkSubnetConfig -Name 'default' -VirtualNetwork $MelRecoveryVnet -AddressPrefix '10.0.0.0/20'
+ if (-NOT (Get-AzureRMVirtualNetwork -Name $a2aRecoveryVnet -ResourceGroupName $RGASR -EA SilentlyContinue)) {
+  $MelRecoveryVnet = New-AzureRmVirtualNetwork -Name $a2aRecoveryVnet -ResourceGroupName $RGASR -Location $Melbourne -AddressPrefix $VnetSydneyAddr
+  $MelRecoveryVnet=Add-AzureRmVirtualNetworkSubnetConfig -Name 'default' -VirtualNetwork $MelRecoveryVnet -AddressPrefix $SydWINsubnetAddr
   $null=Set-AzureRMVirtualNetwork -VirtualNetwork $MelRecoveryVnet
  }
- $MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR
+ $MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name $a2aRecoveryVnet -ResourceGroupName $RGASR
  $MelbourneRecoveryNetwork = $MelRecoveryVnet.Id
 }
 #endregion
@@ -1710,9 +1711,10 @@ Set-AzureRmRecoveryServicesBackupProperties  -Vault $BackupVaultMel `
 
 #endregion
 #region ASRfabric
-
+#region ASRvault
 $VaultSettings=Set-AzureRmRecoveryServicesAsrVaultContext -Vault $BackupVaultMel
-
+#endregion
+#region fabrics
 #create the Azure Site Recovery fabric for Sydney
 Write-Verbose -Message 'creating Azure Site Recovery fabric. (Sydney)'
 if (-NOT ( Get-AzureRmRecoveryServicesAsrFabric -Name $SydASRFabricName -EA SilentlyContinue) ) { 
@@ -1736,7 +1738,8 @@ if (-NOT ( Get-AzureRmRecoveryServicesAsrFabric -Name $MelASRFabricName -EA Sile
  } while ($status.StateDescription -ne 'Completed')
 }
 $MelASRFabric = Get-AzureRmRecoveryServicesAsrFabric -Name $MelASRFabricName 
-
+#endregion
+#region protectContainers
 #Create a Protection container in the primary Azure region (within the Primary fabric)
 Write-Verbose -Message 'creating Azure Site Recovery protection container. (Sydney)'
 if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric -Name $SydASRContainerName -EA SilentlyContinue)) {
@@ -1760,7 +1763,8 @@ if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $MelASRFabri
  } while ($status.StateDescription -ne 'Completed')
 }
 $RecoveryProtContainer = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $MelASRFabric -Name $MelASRContainerName
-
+#endregion
+#region ReplPolicy
 #Create the replication policy
 Write-Verbose -Message 'creating Azure Site Recovery (AzureToAzure) replication Policy'
 if (-NOT (Get-AzureRmRecoveryServicesAsrPolicy -Name $ASRPolicyName -EA SilentlyContinue)) {
@@ -1773,7 +1777,8 @@ if (-NOT (Get-AzureRmRecoveryServicesAsrPolicy -Name $ASRPolicyName -EA Silently
 }
 
 $ReplicationPolicy = Get-AzureRmRecoveryServicesAsrPolicy -Name $ASRPolicyName
-
+#endregion
+#region ContainerMappings
 #Create Protection container mapping between the Primary and Recovery Protection Containers with the Replication policy
 Write-Verbose -Message 'creating Azure Site Recovery protection container mapping'
 if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $PrimaryProtContainer -Name 'A2APrimaryToRecovery' -EA SilentlyContinue)) {
@@ -1797,11 +1802,12 @@ if (-NOT (Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionCo
  } while ($status.StateDescription -ne 'Completed')
 }
 $MelToSydPCMapping = Get-AzureRmRecoveryServicesAsrProtectionContainerMapping -ProtectionContainer $RecoveryProtContainer -Name 'A2ARecoveryToPrimary'
-
+#endregion
+#region NetworkMappings
 #Create an ASR network mapping between the primary Azure virtual network and the recovery Azure virtual network
 Write-Verbose -Message 'creating Azure Site Recovery network mapping (SydToMel)'
 
-$MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name 'a2arecoveryvnet' -ResourceGroupName $RGASR
+$MelRecoveryVnet=Get-AzureRMVirtualNetwork -Name $a2aRecoveryVnet -ResourceGroupName $RGASR
 $MelbourneRecoveryNetwork = $MelRecoveryVnet.Id
 $SydPrimaryVnet=Get-AzureRMVirtualNetwork -Name $VnetSydney -ResourceGroupName $RG
 $SydneyPrimaryNetwork = $SydPrimaryVnet.Id
@@ -1827,7 +1833,7 @@ if (-NOT (Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2AMelToSydNWMappi
  } while ($status.StateDescription -ne 'Completed')
 }
 $A2AMelToSydNwMapping=Get-AzureRmRecoveryServicesAsrNetworkMapping -Name 'A2AMelToSydNWMapping' -PrimaryFabric  $MelASRFabric
-
+#endregion
 #endregion
 #region OMS
  Write-Verbose -Message 'Operational Insights Workspace. (Melbourne)'
