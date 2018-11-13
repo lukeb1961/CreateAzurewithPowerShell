@@ -4,22 +4,22 @@
 #run as admin to create self-signed certs for automation RunAsAccount etc. (it needs admin for the local cert store, etc.)
 
 <# ToDo
-  dev-test labs (or just use Visual Studio)
-  service fabric with containers
-  https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
+    dev-test labs (or just use Visual Studio)
+    service fabric with containers
+    https://docs.microsoft.com/en-us/azure/service-fabric/service-fabric-get-started-containers-linux
 #>
 
 <#
-  to collapse/expand all the Regions
-  if using Visual Studio Code
+    to collapse/expand all the Regions
+    if using Visual Studio Code
     Fold All folds all region in the editor:
        Ctrl+K Ctrl+0 (zero) on Windows
     
     Unfold All unfolds all regions in the editor:
        Ctrl+K Ctrl+J on Windows
 
-  if using PowerShell ISE
-  Ctrl-M   (toggles each way)
+    if using PowerShell ISE
+    Ctrl-M   (toggles each way)
 #>
 
 #region SelectSubscription
@@ -55,15 +55,15 @@ Import-Module -Name $AZMODULENAME
 
 $USINGAZMODULE=$false   # testing the new AZ module
 <#
-  Import-Module -Name AZ
-  #and every cmdlet is now -az instead of -azureRm so create Aliases for backward compatibility
-  (Get-command -module az.*) | Where-Object {$_.CommandType -ne 'Alias'} |
+    Import-Module -Name AZ
+    #and every cmdlet is now -az instead of -azureRm so create Aliases for backward compatibility
+    (Get-command -module az.*) | Where-Object {$_.CommandType -ne 'Alias'} |
     foreach-object {
       $AZname = $_.Name
       $AzureRMname = '{0}-AzureRM{1}' -f $_.Verb, $_.Noun.Substring(2)
       New-Alias -Name $AzureRMname -Value $AZname -Description 'alias for AzureRM compatibility'
     }
-  }
+    }
 #>
 if (-NOT ((Get-AzureRmContext).Subscription.Name -eq $Subscription) ) {
   Connect-AzureRmAccount -Subscription "$Subscription"
@@ -77,7 +77,7 @@ if ($MyName.Length -gt 11) {
 }
 $MyAzureADAccount=Get-AzureRMADUser -Mail $MyEmail
 if (-NOT ($MyAzureADAccount)) {
- $MyAzureADAccount=Get-AzureRMADUser | Where-Object {$_.UserPrincipalName -match $MyName}
+  $MyAzureADAccount=Get-AzureRMADUser | Where-Object {$_.UserPrincipalName -match $MyName}
 }
 $VerbosePreference = 'Continue'
 #endregion
@@ -590,27 +590,27 @@ $NXscripts ='UbuntuInstallDocker','CentOSInstallDocker','OpenSuseInstallDocker',
 # define a simple runbook that we will load into automation
 [scriptblock] $StopAzureVMinResponseToVMalert = {
   <#
-    .SYNOPSIS
-    This runbook stops a resource management VM in response to an Azure alert trigger.
+      .SYNOPSIS
+      This runbook stops a resource management VM in response to an Azure alert trigger.
 
-    .DESCRIPTION
-    This runbook stops a resource management VM in response to an Azure alert trigger.
-    The input is alert data that has the information required to identify which VM to stop.
+      .DESCRIPTION
+      This runbook stops a resource management VM in response to an Azure alert trigger.
+      The input is alert data that has the information required to identify which VM to stop.
 
-    DEPENDENCIES
-    - The runbook must be called from an Azure alert via a webhook.
+      DEPENDENCIES
+      - The runbook must be called from an Azure alert via a webhook.
 
-    REQUIRED AUTOMATION ASSETS
-    - An Automation connection asset called "AzureRunAsConnection" that is of type AzureRunAsConnection.
-    - An Automation certificate asset called "AzureRunAsCertificate".
+      REQUIRED AUTOMATION ASSETS
+      - An Automation connection asset called "AzureRunAsConnection" that is of type AzureRunAsConnection.
+      - An Automation certificate asset called "AzureRunAsCertificate".
 
-    .PARAMETER WebhookData
-    Optional. (The user doesn't need to enter anything, but the service always passes an object.)
-    This is the data that's sent in the webhook that's triggered from the alert.
+      .PARAMETER WebhookData
+      Optional. (The user doesn't need to enter anything, but the service always passes an object.)
+      This is the data that's sent in the webhook that's triggered from the alert.
 
-    .NOTES
-    AUTHOR: Azure Automation Team
-    LASTEDIT: 2017-11-22
+      .NOTES
+      AUTHOR: Azure Automation Team
+      LASTEDIT: 2017-11-22
   #>
 
   [OutputType('PSAzureOperationResponse')]
@@ -1421,11 +1421,11 @@ $vstsBasicAuthHeader=$headers
  #endregion
  #region connections
  <#
-  $Conn = Get-AzureRmAutomationConnection -Name AzureRunAsConnection `
+    $Conn = Get-AzureRmAutomationConnection -Name AzureRunAsConnection `
                                          -ResourceGroupName $RG `
                                          -AutomationAccountName $MelAutomation
 
-  Add-AzureRMAccount -ServicePrincipal -Tenant $Conn.TenantID `
+    Add-AzureRMAccount -ServicePrincipal -Tenant $Conn.TenantID `
                     -ApplicationId $Conn.ApplicationID `
                     -CertificateThumbprint $Conn.CertificateThumbprint
 #>
@@ -2070,10 +2070,10 @@ $SydVMSSConfig = New-AzureRmVmssConfig -Location $Sydney `
                                        -UpgradePolicyMode Automatic `
                                        -Tag @{'Location'='Sydney';'alias-rg'=$MyName}
 <#
-  ### cannot get this to work?
-  #Get-AzureRmVMExtensionImageType
-  # Use the CustomScriptExtension (for Windows) to install IIS and configure basic website
-  $SydVMSSConfig = Add-AzureRmVmssExtension -VirtualMachineScaleSet $SydVMSSConfig `
+    ### cannot get this to work?
+    #Get-AzureRmVMExtensionImageType
+    # Use the CustomScriptExtension (for Windows) to install IIS and configure basic website
+    $SydVMSSConfig = Add-AzureRmVmssExtension -VirtualMachineScaleSet $SydVMSSConfig `
                                           -Name 'SydWinVMSSextension' `
                                           -Publisher 'Microsoft.Compute' `
                                           -Type 'CustomScriptExtension' `
@@ -2558,9 +2558,9 @@ $TempASRJob = New-AzureRmRecoveryServicesAsrReplicationProtectedItem -AzureToAzu
                                               -RecoveryResourceGroupId $RecoveryRG.ResourceId
 
 <#
-  # check the protection state via
-  $containers = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric
-  $containers | Get-AzureRmRecoveryServicesAsrReplicationProtectedItem
+    # check the protection state via
+    $containers = Get-AzureRmRecoveryServicesAsrProtectionContainer -Fabric $SydASRFabric
+    $containers | Get-AzureRmRecoveryServicesAsrReplicationProtectedItem
 #>
 #endregion
 #region enableVMSSautoscale
@@ -2939,6 +2939,7 @@ Invoke-AzureRmResourceAction -Action listConnectionStrings -ResourceType 'Micros
                                                  -ConnectionType Vnet2Vnet -RoutingWeight 10 `
                                                  -SharedKey $GatewaySharedKey `
                                                  -Tag @{'VPNConnectionTag'='Melbourne to Sydney'; 'alias-rg'=$MyName }
+    }
     Get-AzureRMVirtualNetworkGatewayConnection -Name 'MeltoSyd' -ResourceGroupName $RG
 
 
