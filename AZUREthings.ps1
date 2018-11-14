@@ -123,7 +123,8 @@ $ApiMgtName   = ($MyName + '-ApiMgt').ToLower()      # API management
 $SQLdbName         = ($MyName + '-SQLdb01').ToLower()
 $SQLserverName     = ($MyName + '-sqlhostsvr').ToLower()   # globally unique name, must be lowercase
 
-$CosmosDBname      = ($MyName + '-Cosmosdb01').ToLower()
+$CosmosDbAccName      = ($MyName + '-CosmosdbAcc').ToLower()
+$MongoDbAccName       = ($MyName + '-MongodbAPI').ToLower()
 
 $HDIclustername    = ($MyName + '-HDInsightCluster').ToLower()
 $AASservername     = ($MyName + '-analysisserver').ToLower()
@@ -862,11 +863,11 @@ if (Get-AzureRmResourceGroup -Name $RGASR -EA SilentlyContinue) {
   }
 
   if (-NOT (   Get-AzureRMPublicIpAddress -Name $sydlxLBpipName -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
-    $SydlxLBpip=New-AzureRMPublicIpAddress -Name $sydlxLBpipName -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $SydlxLBname
+   $SydlxLBpip=New-AzureRMPublicIpAddress -Name $sydlxLBpipName -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $SydlxLBname
   }
 
   if (-NOT (   Get-AzureRMPublicIpAddress -Name $sydWinLBpipName -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
-    $SydWinLBpip=New-AzureRMPublicIpAddress -Name $sydWinLBpipName -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $SydWinLBname
+  $SydWinLBpip=New-AzureRMPublicIpAddress -Name $sydWinLBpipName -ResourceGroupName $RG -Location $Sydney -AllocationMethod Dynamic -DomainNameLabel $SydWinLBname
   }
 
   if (-NOT ( Get-AzureRMPublicIpAddress -Name $sydpip1Name -ResourceGroupName $RG -ErrorAction SilentlyContinue)) {
@@ -1092,7 +1093,7 @@ if (-NOT (Get-AzureRmLoadBalancer -name $SydlxLBname -ResourceGroupName $RG -EA 
 
   # the AVset for the ASR recovery group
   if (-NOT (Get-AzureRmAvailabilitySet -ResourceGroupName $RGASR -Name Mel-ASR-AVset -EA SilentlyContinue)) {
-   $null=New-AzureRmAvailabilitySet -Name Mel-ASR-AVset -ResourceGroupName $RGASR -Location $Melbourne
+   $null=New-AzureRmAvailabilitySet -Name Mel-ASR-AVset -ResourceGroupName $RGASR -Location $Melbourne -Tag @{'alias-rg'=$MyName}
   }
   $MelASRavSet = Get-AzureRmAvailabilitySet -ResourceGroupName $RGASR -Name Mel-ASR-AVset
 
@@ -1134,11 +1135,11 @@ $secretvalue = ConvertTo-SecureString -String $password -AsPlainText -Force
 $result=Set-AzureKeyVaultSecret  -VaultName $KeyVaultMelbourne -Name 'Adminpassword' -SecretValue $secretvalue
 #endregion
 #region Sydney
- if ($AZMODULENAME -eq 'AzureRM' ) {
-  $MKVP=Register-AzureRmResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
+ if ($AZMODULENAME -eq 'Az' ) {
+  $MKVP=Register-AzResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
  }
  else{
-  $MKVP=Register-AzResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
+  $MKVP=Register-AzureRmResourceProvider -ProviderNamespace 'Microsoft.KeyVault'
  }
  Write-Verbose -Message 'Creating (standard) Key Vault (Sydney)'
  if (-NOT ( Get-AzureRmKeyVault -ResourceGroupName $RG -VaultName $KeyVaultSydney -EA SilentlyContinue)) {
@@ -2672,8 +2673,44 @@ $endpoint2 = New-AzureRmTrafficManagerEndpoint -Name 'MyEndPoint2' -ProfileName 
     }
 #endregion
 #region CosmosDB
-#region New-AzureRMCosmosDBAPIaccount
-function New-AzureRMCosmosDBAPIaccount {
+# https://docs.microsoft.com/en-us/azure/cosmos-db/manage-account-with-powershell
+#region lbCosmosDB functions
+function Get-lbCosmosDBAccount {
+   PARAM([parameter(Mandatory=$true)] $ResourceGroupName,
+         [parameter(Mandatory=$true)] $AccountName)
+
+   Get-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
+                       -ApiVersion '2015-04-08' `
+                       -ResourceGroupName $ResourceGroupName -Name $AccountName 
+}
+function Get-lbCosmosDBAccountKeys {
+   PARAM([parameter(Mandatory=$true)] $ResourceGroupName,
+         [parameter(Mandatory=$true)] $AccountName)
+
+   Invoke-AzureRmResourceAction -Action listKeys `
+                                        -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
+                                        -ApiVersion '2015-04-08' `
+                                        -ResourceGroupName $ResourceGroupName -Name $AccountName -Force
+}
+function Get-lbCosmosDBConnectionStrings {
+   PARAM([parameter(Mandatory=$true)] $ResourceGroupName,
+         [parameter(Mandatory=$true)] $AccountName)
+
+   Invoke-AzureRmResourceAction -Action listConnectionStrings `
+                                -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
+                                -ApiVersion '2015-04-08' `
+                                -ResourceGroupName $ResourceGroupName -Name $AccountName -Force
+}
+function Set-lbCosmosDBAccountTag {
+   PARAM([parameter(Mandatory=$true)] $ResourceGroupName,
+         [parameter(Mandatory=$true)] $AccountName, 
+                                      $tags=@{'alias-rg'=$MyName})
+
+   Set-AzureRmResource -ResourceType 'Microsoft.DocumentDB/databaseAccounts'  `
+                       -ResourceGroupName $ResourceGroupName -Name $AccountName `
+                       -Tags $tags -Force
+}
+function New-lbCosmosDBaccount {
   <#
       .SYNOPSIS
       Creates an Azure Cosmos DB database account.
@@ -2712,31 +2749,31 @@ function New-AzureRMCosmosDBAPIaccount {
       Describe parameter -Table.
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'
       Creates a CosmosDB named 'myCosmosDB' using the SQL api, with 'session' default Consistency Level 
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -locationNames Value -iprangefilter Value -defaultConsistencyLevel Value
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -locationNames Value -iprangefilter Value -defaultConsistencyLevel Value
       Describe what this call does
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'  -defaultConsistencyLevel 'BoundedStaleness' -maxIntervalInSeconds 5 -maxStalenessPrefix 100
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB'  -defaultConsistencyLevel 'BoundedStaleness' -maxIntervalInSeconds 5 -maxStalenessPrefix 100
       Describe what this call does
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -MongoDB
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -MongoDB
       Describe what this call does
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Gremlin
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Gremlin
       Describe what this call does
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Cassandra
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Cassandra
       Describe what this call does
 
       .EXAMPLE
-      New-AzureRMCosmosDBAPIaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Table
+      New-lbCosmosDBaccount -ResourceGroupName 'myRG' -accountName 'MyCosmosDB' -Table
       Describe what this call does
 
       .NOTES
@@ -2857,23 +2894,63 @@ function New-AzureRMCosmosDBAPIaccount {
     if ($MongoDB) {
       New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
                           -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties `
-                          -Kind 'MongoDB' -Force
+                          -Kind 'MongoDB' -Force 
     }
     else {
       New-AzureRmResource -ResourceType 'Microsoft.DocumentDb/databaseAccounts' -ApiVersion '2015-04-08' `
-                          -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties -Force
+                          -ResourceGroupName $resourceGroupName -Location $resourceGroupLocation -Name $accountName -PropertyObject $DBProperties `
+                          -Force 
     }
 
   }
 
 }
 #endregion
-#create the CosmosDB account
-New-AzureRMCosmosDBAPIaccount -ResourceGroupName $RG -accountName $CosmosDBname -locationNames $Sydney -defaultConsistencyLevel Eventual
+#create the CosmosDB & MongoDB accounts
+
+if (-NOT (Get-lbCosmosDBAccount -ResourceGroupName $RG -AccountName $CosmosDbAccName -EA silentlyContinue )) {
+  New-lbCosmosDBaccount -ResourceGroupName $RG -accountName $CosmosDbAccName -locationNames $Sydney -defaultConsistencyLevel Eventual
+}
+  Set-lbCosmosDBAccountTag -ResourceGroupName $RG -accountName $CosmosDbAccName -tags @{'alias-rg'=$MyName}
+  $CosmosDBAcckeys = Get-lbCosmosDBAccountKeys -ResourceGroupName $RG -AccountName $CosmosDbAccName 
+
+if (-NOT (Get-lbCosmosDBAccount -ResourceGroupName $RG -AccountName $MongoDbAccName -EA SilentlyContinue)) {
+  New-lbCosmosDBaccount -ResourceGroupName $RG -accountName $MongoDbAccName  -locationNames $SYdney -defaultConsistencyLevel Eventual -MongoDB
+}
+  Set-lbCosmosDBAccountTag -ResourceGroupName $RG -accountName $MongoDbAccName  -tags @{'alias-rg'=$MyName}
+  $MongoDBAcckeys = Get-lbCosmosDBAccountKeys -ResourceGroupName $RG -AccountName $MongoDbAccName 
 
 # Retrieve a connection string that can be used by a MongoDB client
-Invoke-AzureRmResourceAction -Action listConnectionStrings -ResourceType 'Microsoft.DocumentDb/databaseAccounts' `
-                             -ApiVersion '2015-04-08' -ResourceGroupName $RG -Name $CosmosDBname -Force
+$ConnMongo=Get-lbCosmosDBConnectionStrings -ResourceGroupName $RG -AccountName $MongoDbAccName
+
+$CosmosDBAcc = Get-lbCosmosDBAccount -ResourceGroupName $RG -AccountName $CosmosDbAccName
+$MongoDBAcc  = Get-lbCosmosDBAccount -ResourceGroupName $RG -AccountName $MongoDbAccName
+
+####  Create Databases and Collections
+Import-Module CosmosDB
+$CosmosDBname   = 'CosmosTestDB'
+$CosmosCollName = 'CosmosTestColl'
+$CosmosKey = ConvertTo-SecureString -AsPlainText -Force -String $CosmosDBAcckeys.primaryMasterKey
+
+$CosmosCTX=New-CosmosDbContext  -Account $CosmosDbAccName -Database $CosmosDBname -Key $CosmosKey
+#if (-NOT (Get-CosmosDbDatabase -Context $CosmosCTX -Id $CosmosDBname -EA SilentlyContinue)) {
+  New-CosmosDbDatabase -Context $CosmosCTX -Id $CosmosDBname
+#}
+#if (-NOT (Get-CosmosDbCollection -Context $CosmosCTX -Id $CosmosCollName -EA SilentlyContinue)) {
+  New-CosmosDbCollection -Context $CosmosCTX -Id $CosmosCollName -OfferThroughput 2500
+#}
+
+$MongoDBname   = 'MongoTestDB'
+$MongoCollName = 'MongoTestColl'
+$MongoKey = ConvertTo-SecureString -AsPlainText -Force -String $MongoDBAcckeys.primaryMasterKey
+
+$MongoCTX=New-CosmosDbContext  -Account $MongoDbAccName -Database $MongoDBname -Key $MongoKey
+#if (-NOT (Get-CosmosDbDatabase -Context $MongoCTX -Id $MongoDBname -EA SilentlyContinue)) {
+  New-CosmosDbDatabase -Context $MongoCTX -Id $MongoDBname
+#}
+#if (-NOT (Get-CosmosDbCollection -Context $MongoCTX -Id $MongoCollName -EA SilentlyContinue)) {
+  New-CosmosDbCollection -Context $MongoCTX -Id $MongoCollName -OfferThroughput 2500
+#}
 #endregion
 #region AzureAnalysisServer
    if (-NOT (Test-AzureRmAnalysisServicesServer  -Name $AASservername -ResourceGroupName $RG)) {
